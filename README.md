@@ -2,6 +2,12 @@
 
 **rMAP-GWAS** — **rapid Microbial Analysis Pipeline for Genome-Wide Association Studies** — is a portable WDL/Cromwell workflow for microbial case-control genome-wide association studies from paired-end Illumina reads. It is designed to generate interpretable, reproducible association results with annotated top-priority loci, case/control enrichment, statistical evidence, plots & a self-contained HTML report.
 
+## Workflow overview
+<p align="center">
+  <img src="docs/assets/workflow/rMAP_GWAS.png"
+       alt="rMAP-GWAS workflow"
+       width="100%">
+</p>
 ---
 
 ## Overview
