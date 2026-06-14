@@ -1,19 +1,16 @@
 # rMAP-GWAS
 
-**rMAP-GWAS** — **rapid Microbial Analysis Pipeline for Genome-Wide Association Studies** — is a portable WDL/Cromwell workflow for microbial case-control genome-wide association studies from paired-end Illumina reads. It is designed to generate interpretable, reproducible association results with annotated top-priority loci, case/control enrichment, statistical evidence, plots, and a self-contained HTML report.
-
-> Workflow name in WDL: `rMAP_GWAS`  
-> Repository name: `rMAP-GWAS`
+**rMAP-GWAS** — **rapid Microbial Analysis Pipeline for Genome-Wide Association Studies** — is a portable WDL/Cromwell workflow for microbial case-control genome-wide association studies from paired-end Illumina reads. It is designed to generate interpretable, reproducible association results with annotated top-priority loci, case/control enrichment, statistical evidence, plots & a self-contained HTML report.
 
 ---
 
 ## Overview
 
-Microbial genome-wide association studies (mGWAS) can identify bacterial genetic variants, unitigs, genes, and accessory-genome features associated with phenotypes such as antimicrobial resistance, virulence, host source, outbreak status, colonization, infection, or clinical outcome. However, microbial GWAS requires careful handling of population structure, case-control imbalance, phenotype quality, feature annotation, and reproducible reporting.
+Microbial genome-wide association studies (mGWAS) can identify bacterial genetic variants, unitigs, genes & accessory-genome features associated with phenotypes such as antimicrobial resistance, virulence, host source, outbreak status, colonization, infection, or clinical outcome. However, microbial GWAS requires careful handling of population structure, case-control imbalance, phenotype quality, feature annotation & reproducible reporting.
 
-`rMAP-GWAS` aims to provide an end-to-end cloud-ready workflow that starts from clearly designated **case** and **control** paired-end reads and produces:
+`rMAP-GWAS` aims to provide an end-to-end cloud-ready workflow that starts from clearly designated **case** and **control** paired-end reads & produces:
 
-- read QC and trimming summaries
+- read QC & trimming summaries
 - de novo assemblies
 - assembly quality-control metrics
 - genome annotation
@@ -21,9 +18,9 @@ Microbial genome-wide association studies (mGWAS) can identify bacterial genetic
 - unitig/k-mer feature matrix
 - population-structure correction inputs
 - microbial GWAS results using `pyseer`
-- annotated significant loci and genes
+- annotated significant loci & genes
 - case/control enrichment summaries
-- Manhattan and QQ plots
+- Manhattan & QQ plots
 - top-priority GWAS hits table
 - portable offline HTML report
 
@@ -41,14 +38,14 @@ Microbial genome-wide association studies (mGWAS) can identify bacterial genetic
 - convergent MDR-hvKp vs non-convergent isolates
 - case vs control definitions supplied by the user
 
-The workflow is organism-agnostic in principle, but users should interpret results in the context of species biology, sampling structure, recombination, clonal expansion, and phenotype quality.
+The workflow is organism-agnostic in principle, but users should interpret results in the context of species biology, sampling structure, recombination, clonal expansion & phenotype quality.
 
 ---
 
 ## Key features
 
 - **Case-control aware input design**  
-  Users provide separate arrays of case and control paired-end reads in a Cromwell/Terra JSON file.
+  Users provide separate arrays of case & control paired-end reads in a Cromwell/Terra JSON file.
 
 - **Microbial GWAS engine**  
   Primary association testing is performed using `pyseer`.
@@ -56,20 +53,20 @@ The workflow is organism-agnostic in principle, but users should interpret resul
 - **Feature types supported**
   - unitigs/k-mers
   - pangenome gene presence/absence
-  - optional reference-based SNPs when a reference genome and annotation are provided
+  - optional reference-based SNPs when a reference genome & annotation are provided
 
 - **Population-structure correction**  
   The workflow generates distance/covariate inputs to reduce false-positive associations caused by clonal population structure.
 
 - **Annotated top hits**  
-  Significant hits are annotated with gene names, products, genomic context, case/control frequencies, enrichment direction, p-values, q-values, and priority scores.
+  Significant hits are annotated with gene names, products, genomic context, case/control frequencies, enrichment direction, *p*-values, q-values & priority scores.
 
 - **Portable reporting**  
-  A final self-contained HTML report summarizes the full analysis and can be shared without requiring external JavaScript, notebooks, or web services.
+  A final self-contained HTML report summarizes the full analysis & can be shared without requiring external JavaScript, notebooks, or web services.
 
 ---
 
-## Proposed workflow structure
+## Workflow structure
 
 ```text
 rMAP_GWAS
@@ -116,9 +113,9 @@ rMAP_GWAS
 
 ---
 
-## Recommended Docker/container strategy
+## Docker/container strategy
 
-The workflow should use public BioContainers, Staph-B, or maintained project images where possible, and custom `gmboowa/rmap-gwas-*` images for integration/reporting tasks.
+The workflow uses public BioContainers, Staph-B, or maintained project images where possible & custom `gmboowa/rmap-gwas-*` images for integration/reporting tasks.
 
 ### Public images to use where possible
 
@@ -137,13 +134,13 @@ The workflow should use public BioContainers, Staph-B, or maintained project ima
 | Scoary | `quay.io/biocontainers/scoary:<tag>` |
 | Snippy | `staphb/snippy:<tag>` |
 
-### Custom images recommended
+### Custom images 
 
 | Image | Purpose |
 |---|---|
-| `gmboowa/rmap-gwas-pyseer-annotate:<tag>` | pyseer execution, hit annotation, enrichment summaries, and prioritization |
-| `gmboowa/rmap-gwas-report:<tag>` | final offline HTML report generation |
-| `gmboowa/rmap-gwas-bakta-db:<tag>` | optional Bakta database image or reference bundle |
+| `gmboowa/rmap-gwas-pyseer-annotate` | pyseer execution, hit annotation, enrichment summaries, and prioritization |
+| `gmboowa/rmap-gwas-report` | final offline HTML report generation |
+| `gmboowa/rmap-gwas-bakta-db` | optional Bakta database image or reference bundle |
 | `gmboowa/rmap-gwas-reference-bundle:<species-tag>` | optional species-specific reference FASTA/GFF/GenBank resources |
 
 ---
@@ -153,12 +150,12 @@ The workflow should use public BioContainers, Staph-B, or maintained project ima
 ```json
 {
   "rMAP_GWAS.case_sample_names": ["case_001", "case_002"],
-  "rMAP_GWAS.case_read1s": ["gs://bucket/case_001_R1.fastq.gz", "gs://bucket/case_002_R1.fastq.gz"],
-  "rMAP_GWAS.case_read2s": ["gs://bucket/case_001_R2.fastq.gz", "gs://bucket/case_002_R2.fastq.gz"],
+  "rMAP_GWAS.case_read1s": ["~/case_001_R1.fastq.gz", "~/case_002_R1.fastq.gz"],
+  "rMAP_GWAS.case_read2s": ["~/case_001_R2.fastq.gz", "~/case_002_R2.fastq.gz"],
 
   "rMAP_GWAS.control_sample_names": ["control_001", "control_002"],
-  "rMAP_GWAS.control_read1s": ["gs://bucket/control_001_R1.fastq.gz", "gs://bucket/control_002_R1.fastq.gz"],
-  "rMAP_GWAS.control_read2s": ["gs://bucket/control_001_R2.fastq.gz", "gs://bucket/control_002_R2.fastq.gz"],
+  "rMAP_GWAS.control_read1s": ["~/control_001_R1.fastq.gz", "~/control_002_R1.fastq.gz"],
+  "rMAP_GWAS.control_read2s": ["~/control_001_R2.fastq.gz", "~/control_002_R2.fastq.gz"],
 
   "rMAP_GWAS.phenotype_name": "case_control",
   "rMAP_GWAS.case_label": "case",
@@ -171,9 +168,9 @@ The workflow should use public BioContainers, Staph-B, or maintained project ima
   "rMAP_GWAS.do_gene_gwas": true,
   "rMAP_GWAS.do_snp_gwas": false,
 
-  "rMAP_GWAS.reference_fasta": "gs://bucket/reference.fasta",
-  "rMAP_GWAS.reference_gff": "gs://bucket/reference.gff",
-  "rMAP_GWAS.covariates_tsv": "gs://bucket/covariates.tsv",
+  "rMAP_GWAS.reference_fasta": "~/reference.fasta",
+  "rMAP_GWAS.reference_gff": "~/reference.gff",
+  "rMAP_GWAS.covariates_tsv": "~/covariates.tsv",
 
   "rMAP_GWAS.min_af": 0.01,
   "rMAP_GWAS.max_af": 0.99,
@@ -286,7 +283,7 @@ control_frequency > case_frequency
 beta < 0
 ```
 
-If the direction from frequencies and model beta disagree, the feature is flagged as:
+If the direction from frequencies & model beta disagree, the feature is flagged as:
 
 ```text
 Check manually
@@ -342,7 +339,7 @@ The final `rMAP_GWAS_report.html` should include:
 
 ---
 
-## Recommended minimum viable version
+## Minimum viable version
 
 The first stable version should implement:
 
@@ -399,7 +396,7 @@ because underpowered microbial GWAS can produce unstable associations.
 
 ---
 
-## Suggested repository structure
+## Repository structure
 
 ```text
 rMAP-GWAS/
@@ -430,31 +427,24 @@ rMAP-GWAS/
 ├── test_data/
 │   └── README.md
 └── examples/
-    └── terra_submission_notes.md
+    └── submission_notes.md
 ```
 
 ---
 
-## Installation and execution
+## Installation & execution
 
 This repository is designed for execution with WDL-compatible engines such as:
 
 - Cromwell
-- miniwdl
-- Terra/AnVIL-style cloud execution platforms
+- wdl
+- Docker
 
 Example Cromwell command:
 
 ```bash
 java -jar cromwell.jar run rMAP_GWAS.wdl -i inputs/example_inputs.json
 ```
-
-Example miniwdl command:
-
-```bash
-miniwdl run rMAP_GWAS.wdl -i inputs/example_inputs.json
-```
-
 ---
 
 ## Development status
@@ -466,24 +456,24 @@ Planned milestones:
 - [ ] Create WDL skeleton
 - [ ] Add case/control input validation
 - [ ] Add phenotype table generation
-- [ ] Add read QC and trimming
-- [ ] Add assembly and assembly QC
+- [ ] Add read QC & trimming
+- [ ] Add assembly & assembly QC
 - [ ] Add Bakta/Prokka annotation
 - [ ] Add Panaroo gene matrix generation
 - [ ] Add unitig-caller feature generation
 - [ ] Add Mash distance matrix generation
 - [ ] Add pyseer unitig GWAS
 - [ ] Add pyseer gene GWAS
-- [ ] Add hit annotation and prioritization
+- [ ] Add hit annotation & prioritization
 - [ ] Add portable HTML report
 - [ ] Add test dataset
-- [ ] Add Terra-ready example JSON
+- [ ] Add Example JSON
 
 ---
 
 ## Citation
 
-If you use `rMAP-GWAS`, please cite this repository and the core tools used in your analysis. A formal citation will be added once the workflow is released.
+If you use `rMAP-GWAS`, please cite this repository & the core tools used in your analysis. A formal citation will be added once the workflow is released.
 
 Suggested citation format for now:
 
@@ -493,20 +483,12 @@ Mboowa, G. rMAP-GWAS: rapid Microbial Analysis Pipeline for Genome-Wide Associat
 
 ---
 
-## Author
-
-**Gerald Mboowa**  
-African Centre of Excellence in Bioinformatics and Data-Intensive Sciences  
-GitHub: [@gmboowa](https://github.com/gmboowa)
-
----
-
 ## License
 
-This project is released under the MIT License unless otherwise specified.
+This project is released under the MIT License.
 
 ---
 
 ## Disclaimer
 
-`rMAP-GWAS` is intended for research and surveillance support. GWAS associations require careful interpretation and should be validated using independent datasets, biological evidence, and, where appropriate, experimental or epidemiological follow-up.
+`rMAP-GWAS` is intended for research & surveillance support. GWAS associations require careful interpretation & should be validated using independent datasets, biological evidence & where appropriate, experimental or epidemiological follow-up.
