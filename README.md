@@ -2,13 +2,295 @@
 
 **rMAP-GWAS** — **rapid Microbial Analysis Pipeline for Genome-Wide Association Studies** — is a portable WDL/Cromwell workflow for microbial case-control genome-wide association studies from paired-end Illumina reads. It is designed to generate interpretable, reproducible association results with annotated top-priority loci, case/control enrichment, statistical evidence, plots & a self-contained HTML report.
 
-## Workflow overview
+## Visual summary of the rMAP-GWAS workflow
 <p align="center">
   <img src="docs/assets/workflow/rMAP_GWAS.png"
        alt="rMAP-GWAS workflow"
        width="100%">
 </p>
 
+## Detailed workflow logic & sample routing
+
+```text
+Terra sample set / paired-end FASTQ inputs
+        │
+        ├── sample_names = this.gwasmtbs.gwasmtb_id
+        ├── read1s       = this.gwasmtbs.read1
+        ├── read2s       = this.gwasmtbs.read2
+        └── groups       = this.gwasmtbs.group
+                         │
+                         ▼
+Input validation and cohort checks
+        │
+        ├── Confirm equal array lengths:
+        │       sample_names, read1s, read2s, groups
+        │
+        ├── Confirm unique sample IDs
+        │
+        ├── Confirm valid group labels:
+        │       case / control
+        │       1 / 0
+        │       true / false
+        │       yes / no
+        │
+        ├── Confirm at least one case and one control
+        │
+        └── Generate validation report
+                         │
+                         ▼
+Phenotype table generation
+        │
+        ├── Case samples coded as:      1
+        ├── Control samples coded as:   0
+        │
+        ├── Output:
+        │       <output_prefix>_phenotypes.tsv
+        │
+        └── Output:
+                <output_prefix>_sample_groups.tsv
+                         │
+                         ▼
+All selected samples routed together
+        │
+        ├── No species exclusion branch at this stage
+        ├── No case/control separation for assembly or annotation
+        └── Case/control labels are retained only for GWAS phenotype coding
+                         │
+                         ▼
+Per-sample processing scatter
+        │
+        ├── For each selected sample:
+        │
+        │       Paired-end FASTQ files
+        │              │
+        │              ▼
+        │       Read trimming and QC with fastp
+        │              │
+        │              ├── Trimmed R1 FASTQ
+        │              ├── Trimmed R2 FASTQ
+        │              ├── fastp HTML report
+        │              └── fastp JSON report
+        │              │
+        │              ▼
+        │       De novo genome assembly with Shovill
+        │              │
+        │              ├── Contigs FASTA
+        │              └── Shovill log
+        │              │
+        │              ▼
+        │       Assembly quality control with QUAST
+        │              │
+        │              └── QUAST report TSV
+        │              │
+        │              ▼
+        │       Genome annotation with Prokka
+        │              │
+        │              ├── GFF annotation
+        │              ├── GenBank file
+        │              ├── Protein FASTA
+        │              └── Nucleotide feature FASTA
+        │
+        └── End per-sample scatter
+                         │
+                         ▼
+Cohort-level pangenome construction
+        │
+        ├── Collect all Prokka GFF files
+        │
+        ├── Run Panaroo pangenome analysis
+        │
+        ├── Clean pangenome graph using strict mode
+        │
+        ├── Remove invalid genes
+        │
+        └── Generate gene presence/absence matrix
+                         │
+                         ├── gene_presence_absence.csv
+                         ├── gene_presence_absence.Rtab
+                         └── panaroo_summary.txt
+                         │
+                         ▼
+Cohort-level genome distance estimation
+        │
+        ├── Collect all Shovill assemblies
+        ├── Rename assemblies by sample ID
+        ├── Create Mash sketches
+        └── Compute pairwise Mash distance matrix
+                         │
+                         └── mash_distances.tsv
+                         │
+                         ▼
+Gene-based microbial GWAS
+        │
+        ├── Inputs:
+        │       phenotype table
+        │       Panaroo gene presence/absence matrix
+        │       Mash distance matrix
+        │
+        ├── Run pyseer gene presence/absence GWAS
+        │
+        ├── Apply allele-frequency filters:
+        │       min_af
+        │       max_af
+        │
+        └── Correct for population structure using Mash distances
+                         │
+                         └── pyseer_gene_assoc.tsv
+                         │
+                         ▼
+GWAS hit prioritization
+        │
+        ├── Parse pyseer association results
+        ├── Link association hits to Panaroo/Prokka annotations
+        ├── Calculate case and control gene frequencies
+        ├── Estimate enrichment direction:
+        │       case-enriched
+        │       control-enriched
+        │       check manually
+        │
+        ├── Rank features using:
+        │       p-value or q-value
+        │       effect direction
+        │       odds ratio
+        │       annotation availability
+        │       recurrence across samples
+        │
+        └── Generate prioritized GWAS tables
+                         │
+                         ├── <output_prefix>_all_ranked_hits.tsv
+                         ├── <output_prefix>_top_priority_hits.tsv
+                         ├── <output_prefix>_all_significant_hits.tsv
+                         └── <output_prefix>_enrichment_summary.tsv
+                         │
+                         ▼
+Integrated reporting and provenance
+        │
+        ├── Merge validation report
+        ├── Summarize case/control composition
+        ├── Summarize Panaroo outputs
+        ├── Display prioritized association hits
+        ├── Record reference/provenance settings
+        │       reference_docker
+        │       reference_species
+        │       reference_name
+        │
+        └── Generate final report files
+                         │
+                         ├── <output_prefix>_report.html
+                         └── <output_prefix>_run_provenance.json
+```
+
+### Sample routing logic
+
+rMAP-GWAS uses a cohort-level case–control design. Unlike rMAP-TB, which routes samples into MTBC and non-MTBC branches, rMAP-GWAS routes all selected samples through the same processing path. The `group` column is not used to split samples into separate computational branches during read processing, assembly, or annotation. Instead, it is used to construct the phenotype table required for microbial GWAS.
+
+Each selected sample must have:
+
+```text
+sample ID
+read1 FASTQ
+read2 FASTQ
+group label
+```
+
+The group label is interpreted as:
+
+```text
+case      → phenotype value 1
+control   → phenotype value 0
+```
+
+The workflow also accepts common equivalents such as `1/0`, `true/false`, and `yes/no`.
+
+### Terra sample-set routing
+
+When running in Terra using a `gwasmtb_set`, the workflow expects the following mappings:
+
+```text
+sample_names = this.gwasmtbs.gwasmtb_id
+read1s       = this.gwasmtbs.read1
+read2s       = this.gwasmtbs.read2
+groups       = this.gwasmtbs.group
+```
+
+This allows a Terra sample table to be used directly without manually constructing separate case and control file arrays.
+
+### Case–control interpretation
+
+The phenotype table is generated internally from the selected Terra sample set. Samples labelled as cases are coded as `1`, while controls are coded as `0`.
+
+```text
+sample          case_control
+SRRxxxxxx       1
+SRRyyyyyy       0
+```
+
+This phenotype table is passed to pyseer together with the Panaroo gene presence/absence matrix and Mash distance matrix.
+
+### Population structure handling
+
+Microbial GWAS can be confounded by clonal population structure, relatedness, outbreak clusters, lineage effects, and uneven case/control sampling. rMAP-GWAS therefore computes pairwise Mash distances from assembled genomes and supplies this distance matrix to pyseer during gene-based association testing.
+
+```text
+Assemblies
+    ↓
+Mash sketch
+    ↓
+Mash distance matrix
+    ↓
+pyseer population-structure-aware association testing
+```
+
+### Reference and provenance tracking
+
+For MTBC runs, the workflow records the intended reference package:
+
+```text
+reference_docker  = gmboowa/rmap-gwas-mtbc-refs:2026.06
+reference_species = Mycobacterium tuberculosis complex
+reference_name    = MTBC_2026_06
+```
+
+These values are written into the final report and provenance JSON. They document the species/reference configuration used or intended for the analysis.
+
+### Current annotation mode
+
+This workflow version uses Prokka annotation before Panaroo pangenome construction.
+
+```text
+Shovill contigs
+    ↓
+Prokka annotation
+    ↓
+GFF files
+    ↓
+Panaroo pangenome
+```
+
+A Bakta-based version can be implemented separately by replacing the annotation task and ensuring downstream GFF compatibility with Panaroo.
+
+### Final workflow outputs
+
+The major outputs are:
+
+```text
+Phenotype table
+Trimmed FASTQ files
+Genome assemblies
+QUAST assembly QC reports
+Prokka annotation files
+Panaroo pangenome matrices
+Mash distance matrix
+pyseer gene association results
+Prioritized GWAS hit tables
+Enrichment summary
+Interactive HTML report
+Run provenance JSON
+```
+
+### Interpretation note
+
+rMAP-GWAS identifies statistical associations between gene presence/absence patterns and case–control phenotype labels. These associations should be interpreted carefully alongside sample size, population structure, lineage distribution, outbreak clustering, phenotype definition, and biological plausibility. Candidate hits should be validated in independent datasets or by targeted experimental/epidemiological follow-up where possible.
 
 ## Overview
 
