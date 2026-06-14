@@ -8,7 +8,7 @@
 
 Microbial genome-wide association studies (mGWAS) can identify bacterial genetic variants, unitigs, genes & accessory-genome features associated with phenotypes such as antimicrobial resistance, virulence, host source, outbreak status, colonization, infection, or clinical outcome. However, microbial GWAS requires careful handling of population structure, case-control imbalance, phenotype quality, feature annotation & reproducible reporting.
 
-`rMAP-GWAS` aims to provide an end-to-end cloud-ready workflow that starts from clearly designated **case** and **control** paired-end reads & produces:
+`rMAP-GWAS` aims to provide an end-to-end cloud-ready workflow that starts from clearly designated **case** & **control** paired-end reads & produces:
 
 - read QC & trimming summaries
 - de novo assemblies
