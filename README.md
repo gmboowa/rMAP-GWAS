@@ -8,7 +8,7 @@
        alt="rMAP-GWAS workflow"
        width="100%">
 </p>
----
+
 
 ## Overview
 
