@@ -750,19 +750,18 @@ Species-specific reference images provide curated reference files used for prove
 RMAP_GWAS_REFERENCE_GENBANK=/opt/rmap-gwas/refs/reference.genbank
 ```
 
-The same rMAP-GWAS WDL can therefore be used across bacterial species by changing the `reference_docker`, `reference_name`, &  `reference_species` inputs.
+The same rMAP-GWAS WDL can therefore be used across bacterial species by changing the `reference_docker`, `reference_name`, & `reference_species` inputs. The value in the `Species / complex` column can be used as `reference_species`.
 
-
-| Pathogen group | Species / complex                    | Suggested `reference_docker`                  | Suggested `reference_name`                  | Suggested `reference_species`        |
-| -------------- | ------------------------------------ | --------------------------------------------- | ------------------------------------------- | ------------------------------------ |
-| MTBC           | *Mycobacterium tuberculosis* complex | `gmboowa/rmap-gwas-mtbc-refs:2026.06`         | `MTBC_2026_06` (`GCF_000195955.2`)          | `Mycobacterium tuberculosis complex` |
-| ESKAPEE        | *Enterococcus faecium*               | `gmboowa/rmap-gwas-efaecium-refs:2026.06`     | `EFAECIUM_2026_06` (`GCF_000174395.2`)      | `Enterococcus faecium`               |
-| ESKAPEE        | *Staphylococcus aureus*              | `gmboowa/rmap-gwas-saureus-refs:2026.06`      | `SAUREUS_2026_06` (`GCF_000013425.1`)       | `Staphylococcus aureus`              |
-| ESKAPEE        | *Klebsiella pneumoniae*              | `gmboowa/rmap-gwas-kpneumo-refs:2026.06`      | `KPNEUMO_2026_06` (`GCF_000240185.1`)       | `Klebsiella pneumoniae`              |
-| ESKAPEE        | *Acinetobacter baumannii*            | `gmboowa/rmap-gwas-abaumannii-refs:2026.06`   | `ABAUMANNII_2026_06` (`GCF_000015425.1`)    | `Acinetobacter baumannii`            |
-| ESKAPEE        | *Pseudomonas aeruginosa*             | `gmboowa/rmap-gwas-paeruginosa-refs:2026.06`  | `PAERUGINOSA_2026_06` (`GCF_000006765.1`)   | `Pseudomonas aeruginosa`             |
-| ESKAPEE        | *Enterobacter* spp.                  | `gmboowa/rmap-gwas-enterobacter-refs:2026.06` | `ENTEROBACTER_2026_06` (`GCF_000025565.1`)  | `Enterobacter spp.`                  |
-| ESKAPEE        | *Escherichia coli*                   | `gmboowa/rmap-gwas-ecoli-refs:2026.06`        | `ECOLI_2026_06` (`GCF_000005845.2`)         | `Escherichia coli`                   |
+| Pathogen group | Species / complex                    | Suggested `reference_docker`                  | Suggested `reference_name`                 |
+| -------------- | ------------------------------------ | --------------------------------------------- | ------------------------------------------ |
+| MTBC           | *Mycobacterium tuberculosis* complex | `gmboowa/rmap-gwas-mtbc-refs:2026.06`         | `MTBC_2026_06` (`GCF_000195955.2`)         |
+| ESKAPEE        | *Enterococcus faecium*               | `gmboowa/rmap-gwas-efaecium-refs:2026.06`     | `EFAECIUM_2026_06` (`GCF_000174395.2`)     |
+| ESKAPEE        | *Staphylococcus aureus*              | `gmboowa/rmap-gwas-saureus-refs:2026.06`      | `SAUREUS_2026_06` (`GCF_000013425.1`)      |
+| ESKAPEE        | *Klebsiella pneumoniae*              | `gmboowa/rmap-gwas-kpneumo-refs:2026.06`      | `KPNEUMO_2026_06` (`GCF_000240185.1`)      |
+| ESKAPEE        | *Acinetobacter baumannii*            | `gmboowa/rmap-gwas-abaumannii-refs:2026.06`   | `ABAUMANNII_2026_06` (`GCF_000015425.1`)   |
+| ESKAPEE        | *Pseudomonas aeruginosa*             | `gmboowa/rmap-gwas-paeruginosa-refs:2026.06`  | `PAERUGINOSA_2026_06` (`GCF_000006765.1`)  |
+| ESKAPEE        | *Enterobacter* spp.                  | `gmboowa/rmap-gwas-enterobacter-refs:2026.06` | `ENTEROBACTER_2026_06` (`GCF_000025565.1`) |
+| ESKAPEE        | *Escherichia coli*                   | `gmboowa/rmap-gwas-ecoli-refs:2026.06`        | `ECOLI_2026_06` (`GCF_000005845.2`)        |
 ### Reference image contents
 
 Each species-specific reference image should contain at minimum:
