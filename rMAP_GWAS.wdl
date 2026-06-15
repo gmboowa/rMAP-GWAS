@@ -2,8 +2,8 @@ version 1.0
 
 workflow rMAP_GWAS {
   input {
-    # Terra sample-set inputs
-    # Suggested Terra mappings when running on a gwasmtb_set:
+    # sample-set inputs
+    # Suggested workspace mappings when running on a gwasmtb_set:
     #   sample_names = this.gwasmtbs.gwasmtb_id
     #   read1s       = this.gwasmtbs.read1
     #   read2s       = this.gwasmtbs.read2
@@ -30,7 +30,7 @@ workflow rMAP_GWAS {
     String output_prefix = "rMAP_GWAS"
 
     # Runtime controls
-    # These defaults are Terra-smoke-test friendly. For full cohorts, increase pangenome/gwas resources as needed.
+    # These defaults are smoke-test friendly. For full cohorts, increase pangenome/gwas resources as needed.
     Int fastp_threads = 4
     Int assembly_threads = 4
     Int annotation_threads = 4
@@ -54,11 +54,15 @@ workflow rMAP_GWAS {
     String quast_docker = "staphb/quast:5.2.0"
     String prokka_docker = "staphb/prokka:1.14.6"
     String panaroo_docker = "quay.io/biocontainers/panaroo:1.5.2--pyhdfd78af_0"
-    # Combined linux/amd64 image for local Colima testing and Terra/Cromwell execution.
+    # Combined linux/amd64 image for local Colima testing and Cromwell execution.
     # Contains pyseer, mash, Python, pandas, numpy, scipy, statsmodels, scikit-learn and tqdm.
     String mash_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.2"
     String pyseer_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.2"
     String python_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.2"
+    # Docker image used for post-GWAS reference annotation and plot generation.
+    # Keep this Python-capable; the task uses pure Python and does not require BLAST.
+    String hit_annotation_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.2"
+    Int plot_max_points = 5000
 
     # Reference/provenance settings. This records the species-specific reference package used or intended for the run.
     String reference_docker = "gmboowa/rmap-gwas-mtbc-refs:2026.06"
@@ -66,13 +70,13 @@ workflow rMAP_GWAS {
     String reference_name = "MTBC_2026_06"
   }
 
-  # Use Terra sample-set arrays directly.
+  # Use sample-set arrays directly.
   Array[String] all_sample_names = sample_names
   Array[File] all_read1s = read1s
   Array[File] all_read2s = read2s
 
   # Shovill checks usable RAM inside the VM and fails if --ram is >= available RAM.
-  # Terra VMs expose slightly less usable RAM than the WDL runtime request, so keep
+  # Cromwell VMs expose slightly less usable RAM than the WDL runtime request, so keep
   # the Shovill command-level RAM below the task runtime memory.
   Int assembly_shovill_ram_gb = if assembly_memory_gb > 16 then assembly_memory_gb - 8 else if assembly_memory_gb > 8 then assembly_memory_gb - 4 else assembly_memory_gb
 
@@ -186,13 +190,46 @@ workflow rMAP_GWAS {
       python_docker = python_docker
   }
 
+  call EXTRACT_REFERENCE_GENBANK_FROM_DOCKER {
+    input:
+      reference_docker = reference_docker,
+      reference_name = reference_name
+  }
+
+  call ANNOTATE_GWAS_HITS_WITH_GENBANK {
+    input:
+      top_priority_hits = PRIORITIZE_GWAS_HITS.top_priority_hits,
+      all_significant_hits = PRIORITIZE_GWAS_HITS.all_significant_hits,
+      gene_presence_absence_csv = PANAROO_PANGENOME.gene_presence_absence_csv,
+      gene_data_csv = PANAROO_PANGENOME.gene_data_csv,
+      combined_dna_cds = PANAROO_PANGENOME.combined_dna_cds,
+      combined_protein_cds = PANAROO_PANGENOME.combined_protein_cds,
+      pan_genome_reference = PANAROO_PANGENOME.pan_genome_reference,
+      reference_genbank = EXTRACT_REFERENCE_GENBANK_FROM_DOCKER.reference_genbank,
+      output_prefix = output_prefix,
+      python_docker = hit_annotation_docker
+  }
+
+  call GENERATE_GWAS_PLOTS {
+    input:
+      pyseer_gene_assoc = PYSEER_GENE_GWAS.pyseer_gene_assoc,
+      output_prefix = output_prefix,
+      significance_alpha = significance_alpha,
+      max_points = plot_max_points,
+      python_docker = python_docker
+  }
+
   call MERGE_RMAP_GWAS_REPORT {
     input:
       output_prefix = output_prefix,
       validation_report = VALIDATE_SAMPLE_SET_INPUTS.validation_report,
       phenotype_tsv = PREPARE_PHENOTYPE_TABLE.phenotype_tsv,
-      top_priority_hits = PRIORITIZE_GWAS_HITS.top_priority_hits,
-      all_significant_hits = PRIORITIZE_GWAS_HITS.all_significant_hits,
+      top_priority_hits = ANNOTATE_GWAS_HITS_WITH_GENBANK.annotated_top_priority_hits,
+      all_significant_hits = ANNOTATE_GWAS_HITS_WITH_GENBANK.annotated_all_significant_hits,
+      reference_annotation_summary = ANNOTATE_GWAS_HITS_WITH_GENBANK.reference_annotation_summary,
+      qq_plot_svg = GENERATE_GWAS_PLOTS.qq_plot_svg,
+      manhattan_plot_svg = GENERATE_GWAS_PLOTS.manhattan_plot_svg,
+      plot_summary = GENERATE_GWAS_PLOTS.plot_summary,
       pyseer_gene_assoc = PYSEER_GENE_GWAS.pyseer_gene_assoc,
       panaroo_summary = PANAROO_PANGENOME.panaroo_summary,
       mash_distances = MASH_DISTANCE_MATRIX.mash_distances,
@@ -213,9 +250,15 @@ workflow rMAP_GWAS {
     File gene_presence_absence_rtab = PANAROO_PANGENOME.gene_presence_absence_rtab
     File mash_distances = MASH_DISTANCE_MATRIX.mash_distances
     File pyseer_gene_assoc = PYSEER_GENE_GWAS.pyseer_gene_assoc
-    File top_priority_hits = PRIORITIZE_GWAS_HITS.top_priority_hits
-    File all_significant_hits = PRIORITIZE_GWAS_HITS.all_significant_hits
+    File raw_top_priority_hits = PRIORITIZE_GWAS_HITS.top_priority_hits
+    File raw_all_significant_hits = PRIORITIZE_GWAS_HITS.all_significant_hits
+    File top_priority_hits = ANNOTATE_GWAS_HITS_WITH_GENBANK.annotated_top_priority_hits
+    File all_significant_hits = ANNOTATE_GWAS_HITS_WITH_GENBANK.annotated_all_significant_hits
+    File reference_annotation_summary = ANNOTATE_GWAS_HITS_WITH_GENBANK.reference_annotation_summary
     File enrichment_summary = PRIORITIZE_GWAS_HITS.enrichment_summary
+    File qq_plot_svg = GENERATE_GWAS_PLOTS.qq_plot_svg
+    File manhattan_plot_svg = GENERATE_GWAS_PLOTS.manhattan_plot_svg
+    File plot_summary = GENERATE_GWAS_PLOTS.plot_summary
     File html_report = MERGE_RMAP_GWAS_REPORT.html_report
     File run_provenance = MERGE_RMAP_GWAS_REPORT.run_provenance_json
   }
@@ -256,7 +299,7 @@ if not (len(sample_names) == len(read1s) == len(read2s) == len(groups)):
     )
 
 if len(sample_names) != len(set(sample_names)):
-    errors.append("Sample names must be unique within the selected Terra sample set.")
+    errors.append("Sample names must be unique within the selected sample set.")
 
 bad_names = [x for x in sample_names if any(c.isspace() for c in x)]
 if bad_names:
@@ -296,7 +339,7 @@ if len(case_names) < 50 or len(control_names) < 50:
     warnings.append("Recommended minimum for stable microbial GWAS is often >=50 cases and >=50 controls.")
 
 with open("validation_report.txt", "w") as out:
-    out.write("rMAP-GWAS Terra sample-set input validation report\n")
+    out.write("rMAP-GWAS sample-set input validation report\n")
     out.write("================================================\n")
     out.write(f"Cases: {len(case_names)}\n")
     out.write(f"Controls: {len(control_names)}\n")
@@ -643,12 +686,27 @@ fi
 
 echo "Panaroo output files:" > panaroo_summary.txt
 find panaroo_out -maxdepth 2 -type f | sort >> panaroo_summary.txt
+
+# Ensure optional Panaroo files needed for post-GWAS annotation are present as WDL outputs.
+# Some Panaroo versions may omit one of these; create empty placeholders so the
+# downstream annotation task can degrade gracefully rather than failing localization.
+for f in   panaroo_out/gene_data.csv   panaroo_out/combined_DNA_CDS.fasta   panaroo_out/combined_protein_CDS.fasta   panaroo_out/pan_genome_reference.fa
+ do
+  if [ ! -e "$f" ]; then
+    echo "WARNING: optional Panaroo annotation file missing, creating placeholder: $f" >&2
+    touch "$f"
+  fi
+ done
   >>>
 
   output {
     File gene_presence_absence_csv = "panaroo_out/gene_presence_absence.csv"
     File gene_presence_absence_rtab = "panaroo_out/gene_presence_absence.Rtab"
     File panaroo_summary = "panaroo_summary.txt"
+    File gene_data_csv = "panaroo_out/gene_data.csv"
+    File combined_dna_cds = "panaroo_out/combined_DNA_CDS.fasta"
+    File combined_protein_cds = "panaroo_out/combined_protein_CDS.fasta"
+    File pan_genome_reference = "panaroo_out/pan_genome_reference.fa"
   }
 
   runtime {
@@ -1146,6 +1204,603 @@ PY
   }
 }
 
+
+task EXTRACT_REFERENCE_GENBANK_FROM_DOCKER {
+  input {
+    String reference_docker
+    String reference_name
+  }
+
+  command <<<
+set -euo pipefail
+
+{
+  echo "Reference name: ~{reference_name}"
+  echo "Reference docker: ~{reference_docker}"
+  echo "Searching for reference GenBank inside the reference image."
+} > reference_extract_log.txt
+
+candidate="${RMAP_GWAS_REFERENCE_GENBANK:-}"
+if [ -n "$candidate" ] && [ -s "$candidate" ]; then
+  cp "$candidate" reference.genbank
+  echo "Found GenBank through RMAP_GWAS_REFERENCE_GENBANK=$candidate" >> reference_extract_log.txt
+else
+  found=""
+  for p in \
+    /opt/rmap-gwas/refs/reference.genbank \
+    /opt/rmap-gwas/refs/reference.gbk \
+    /opt/rmap-gwas/refs/mtbc/reference.genbank \
+    /opt/rmap-gwas/refs/kpneumo/reference.genbank \
+    /refs/reference.genbank \
+    /data/reference.genbank
+  do
+    if [ -s "$p" ]; then
+      found="$p"
+      break
+    fi
+  done
+
+  if [ -z "$found" ]; then
+    found=$(find /opt /refs /data 2>/dev/null -type f \( -name "*.genbank" -o -name "*.gbk" -o -name "*.gb" \) | head -n 1 || true)
+  fi
+
+  if [ -n "$found" ] && [ -s "$found" ]; then
+    cp "$found" reference.genbank
+    echo "Found GenBank by search: $found" >> reference_extract_log.txt
+  fi
+fi
+
+if [ ! -s reference.genbank ]; then
+  echo "ERROR: Could not find a non-empty GenBank file in the reference image." >&2
+  cat reference_extract_log.txt >&2
+  echo "Expected either RMAP_GWAS_REFERENCE_GENBANK or a file such as /opt/rmap-gwas/refs/reference.genbank." >&2
+  exit 1
+fi
+
+ls -lh reference.genbank >> reference_extract_log.txt
+cat reference_extract_log.txt
+  >>>
+
+  output {
+    File reference_genbank = "reference.genbank"
+    File reference_extract_log = "reference_extract_log.txt"
+  }
+
+  runtime {
+    docker: reference_docker
+    cpu: 1
+    memory: "4 GB"
+    disks: "local-disk 20 HDD"
+  }
+}
+
+task ANNOTATE_GWAS_HITS_WITH_GENBANK {
+  input {
+    File top_priority_hits
+    File all_significant_hits
+    File gene_presence_absence_csv
+    File gene_data_csv
+    File combined_dna_cds
+    File combined_protein_cds
+    File pan_genome_reference
+    File reference_genbank
+    String output_prefix
+    String python_docker
+  }
+
+  command <<<
+set -euo pipefail
+export PATH=/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
+python <<'PY'
+from pathlib import Path
+import csv, re, difflib
+from collections import defaultdict
+
+prefix = "~{output_prefix}"
+
+def read_tsv_dict(path):
+    p = Path(path)
+    if not p.exists() or p.stat().st_size == 0:
+        return [], []
+    with p.open(newline="", errors="replace") as fh:
+        reader = csv.DictReader(fh, delimiter="\t")
+        rows = list(reader)
+        return reader.fieldnames or [], rows
+
+def write_tsv(path, fields, rows):
+    with open(path, "w", newline="") as out:
+        writer = csv.DictWriter(out, fieldnames=fields, delimiter="\t", extrasaction="ignore")
+        writer.writeheader()
+        for r in rows:
+            writer.writerow({k: r.get(k, "") for k in fields})
+
+def parse_fasta(path):
+    records = {}
+    p = Path(path)
+    if not p.exists() or p.stat().st_size == 0:
+        return records
+    name = None
+    parts = []
+    with p.open(errors="replace") as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            if line.startswith(">"):
+                if name:
+                    records[name] = "".join(parts).replace(" ", "").upper()
+                name = line[1:].strip()
+                parts = []
+            else:
+                parts.append(line.strip())
+    if name:
+        records[name] = "".join(parts).replace(" ", "").upper()
+    return records
+
+def revcomp(seq):
+    tbl = str.maketrans("ACGTURYKMSWBDHVNacgturykmswbdhvn", "TGCAAYRMKSWVHDBNtgcaayrmkswvhdbn")
+    return seq.translate(tbl)[::-1]
+
+def parse_location(location):
+    comp = "complement" in location
+    nums = re.findall(r"<?(\d+)\.\.>?(\d+)|<?(\d+)", location)
+    parts = []
+    for a, b, single in nums:
+        if single:
+            start = end = int(single)
+        else:
+            start, end = int(a), int(b)
+        parts.append((start, end))
+    return comp, parts
+
+def parse_genbank(path):
+    txt = Path(path).read_text(errors="replace")
+    origin = ""
+    m = re.search(r"\nORIGIN\s*(.*?)(?=\n//)", txt, flags=re.S)
+    if m:
+        origin = re.sub(r"[^A-Za-z]", "", m.group(1)).upper()
+    features_text = ""
+    m = re.search(r"\nFEATURES\s+Location/Qualifiers\s*(.*?)(?=\nORIGIN)", txt, flags=re.S)
+    if m:
+        features_text = m.group(1)
+    lines = features_text.splitlines()
+    cds = []
+    current = None
+    current_key = None
+    for line in lines:
+        if re.match(r"^     \S+", line):
+            key = line[5:21].strip()
+            loc = line[21:].strip()
+            if key == "CDS":
+                current = {"location": loc, "qualifiers": {}}
+                cds.append(current)
+                current_key = None
+            else:
+                current = None
+                current_key = None
+            continue
+        if current is None:
+            continue
+        st = line.strip()
+        if not st:
+            continue
+        qm = re.match(r"/([^=]+)=(.*)", st)
+        if qm:
+            current_key = qm.group(1)
+            val = qm.group(2).strip()
+            if val.startswith('"') and val.endswith('"'):
+                val = val[1:-1]
+            elif val.startswith('"'):
+                val = val[1:]
+            current["qualifiers"].setdefault(current_key, "")
+            current["qualifiers"][current_key] += val
+        elif current_key:
+            val = st.strip()
+            if val.endswith('"'):
+                val = val[:-1]
+            current["qualifiers"][current_key] += val
+    refs = []
+    for i, f in enumerate(cds, 1):
+        q = f.get("qualifiers", {})
+        locus = q.get("locus_tag", "") or q.get("protein_id", "") or f"CDS_{i}"
+        gene = q.get("gene", "")
+        product = q.get("product", "")
+        protein_id = q.get("protein_id", "")
+        translation = q.get("translation", "").replace(" ", "").replace("\n", "").upper()
+        comp, loc_parts = parse_location(f.get("location", ""))
+        nuc = ""
+        if origin and loc_parts:
+            seqs = []
+            for start, end in loc_parts:
+                seqs.append(origin[start-1:end])
+            nuc = "".join(seqs)
+            if comp:
+                nuc = revcomp(nuc)
+        refs.append({"id": locus, "locus_tag": locus, "gene": gene, "product": product, "protein_id": protein_id, "location": f.get("location", ""), "nuc": nuc, "prot": translation})
+    return refs
+
+def split_members(x):
+    if not x:
+        return []
+    vals = re.split(r"[;,:\s]+", x.strip())
+    return [v for v in vals if v and v not in ("0", "1", "NA", ".")]
+
+panaroo_rows = {}
+metadata_cols = {"Gene", "Non-unique Gene name", "Annotation", "No. isolates", "No. sequences", "Avg sequences per isolate", "Genome Fragment", "Order within Fragment", "Accessory Fragment", "Accessory Order with Fragment", "QC", "Min group size nuc", "Max group size nuc", "Avg group size nuc"}
+try:
+    with open("~{gene_presence_absence_csv}", newline="", errors="replace") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            gid = row.get("Gene", "")
+            if not gid:
+                continue
+            members = []
+            for k, v in row.items():
+                if k not in metadata_cols:
+                    members.extend(split_members(v or ""))
+            panaroo_rows[gid] = {"gene_name": row.get("Non-unique Gene name", "") or gid, "product": row.get("Annotation", "") or "", "members": sorted(set(members))[:200]}
+except Exception:
+    pass
+
+fasta_records = {}
+for fp in ["~{combined_dna_cds}", "~{pan_genome_reference}"]:
+    fasta_records.update(parse_fasta(fp))
+
+reference_parse_warning = ""
+try:
+    refs = parse_genbank("~{reference_genbank}")
+except Exception as e:
+    refs = []
+    reference_parse_warning = f"{type(e).__name__}: {e}"
+ref_by_token = {}
+for r in refs:
+    for token in [r.get("locus_tag", ""), r.get("gene", ""), r.get("protein_id", "")]:
+        if token:
+            ref_by_token[token] = r
+
+k = 15
+kmer_to_refs = defaultdict(set)
+for idx, r in enumerate(refs):
+    seq = r.get("nuc", "")
+    if len(seq) >= k:
+        step = max(1, len(seq)//200)
+        for i in range(0, len(seq)-k+1, step):
+            kmer_to_refs[seq[i:i+k]].add(idx)
+
+def find_query_sequences(feature, members):
+    tokens = [feature] + members[:50]
+    hits = []
+    for header, seq in fasta_records.items():
+        if any(t and t in header for t in tokens):
+            if seq and len(seq) >= 30:
+                hits.append((header, seq))
+        if len(hits) >= 3:
+            break
+    return hits
+
+def score_sequence_to_reference(seq):
+    if not seq or not refs:
+        return None
+    seq = re.sub(r"[^A-Za-z]", "", seq).upper()
+    if len(seq) < 30:
+        return None
+    best = None
+    for r in refs:
+        rn = r.get("nuc", "")
+        if not rn:
+            continue
+        if seq in rn or rn in seq:
+            cov = 100.0 * min(len(seq), len(rn)) / max(1, len(seq))
+            return (r, 100.0, cov, "nucleotide_exact_or_contained")
+    counts = defaultdict(int)
+    if len(seq) >= k:
+        for i in range(0, len(seq)-k+1, max(1, len(seq)//200)):
+            for idx in kmer_to_refs.get(seq[i:i+k], []):
+                counts[idx] += 1
+    candidates = [idx for idx, c in sorted(counts.items(), key=lambda x: x[1], reverse=True)[:25]] or list(range(min(25, len(refs))))
+    for idx in candidates:
+        r = refs[idx]
+        rn = r.get("nuc", "")
+        if not rn:
+            continue
+        sm = difflib.SequenceMatcher(None, seq, rn, autojunk=False)
+        ratio = sm.ratio() * 100.0
+        lm = sm.find_longest_match(0, len(seq), 0, len(rn))
+        cov = 100.0 * lm.size / max(1, len(seq))
+        combined = ratio + cov
+        if best is None or combined > best[3]:
+            best = (r, ratio, cov, combined)
+    if best:
+        return (best[0], best[1], best[2], "nucleotide_similarity")
+    return None
+
+def confidence(identity, coverage, match_type):
+    try:
+        ident = float(identity)
+        cov = float(coverage)
+    except Exception:
+        return "none"
+    if ident >= 95 and cov >= 80:
+        return "high"
+    if ident >= 80 and cov >= 60:
+        return "medium"
+    if ident >= 60 and cov >= 40:
+        return "low"
+    return "none"
+
+def annotate_row(row):
+    feature = row.get("feature_id", "") or row.get("gene", "") or row.get("variant", "")
+    pan = panaroo_rows.get(feature, {})
+    members = pan.get("members", [])
+    original_gene = row.get("gene_name", "") or pan.get("gene_name", "") or feature
+    original_product = row.get("product", "") or pan.get("product", "")
+    match = None
+    note = ""
+    match_type = "none"
+    identity = ""
+    coverage = ""
+    for token in [feature, original_gene] + members[:100]:
+        if token in ref_by_token:
+            match = ref_by_token[token]
+            match_type = "qualifier_exact"
+            identity = "100.0"
+            coverage = "100.0"
+            break
+    if match is None:
+        best = None
+        for header, seq in find_query_sequences(feature, members):
+            sc = score_sequence_to_reference(seq)
+            if sc:
+                r, ident, cov, mtype = sc
+                rank = float(ident) + float(cov)
+                if best is None or rank > best[-1]:
+                    best = (r, ident, cov, mtype, header, rank)
+        if best:
+            match, ident, cov, match_type, header, rank = best
+            identity = f"{ident:.2f}"
+            coverage = f"{cov:.2f}"
+            note = f"matched_representative_sequence={header[:120]}"
+    if match is None and original_product and original_product.lower() not in ("hypothetical protein", "unknown"):
+        op = original_product.lower()
+        for r in refs:
+            if r.get("product", "").lower() == op:
+                match = r
+                match_type = "product_exact"
+                note = "product-only match; sequence confirmation not available"
+                break
+    if match is None:
+        row.update({"reference_locus_tag": "", "reference_gene": "", "reference_product": "", "reference_location": "", "reference_match_type": "none", "reference_identity": "", "reference_coverage": "", "annotation_confidence": "none", "annotation_note": "No confident GenBank reference match found. The cluster may be accessory, divergent, absent from the reference, or not represented in Panaroo sequence outputs.", "cluster_member_ids": ";".join(members[:30])})
+    else:
+        conf = confidence(identity or 0, coverage or 0, match_type)
+        if match_type == "product_exact" and conf == "none":
+            conf = "low"
+        row.update({"reference_locus_tag": match.get("locus_tag", ""), "reference_gene": match.get("gene", ""), "reference_product": match.get("product", ""), "reference_location": match.get("location", ""), "reference_match_type": match_type, "reference_identity": identity, "reference_coverage": coverage, "annotation_confidence": conf, "annotation_note": note, "cluster_member_ids": ";".join(members[:30])})
+        if (not row.get("gene_name") or row.get("gene_name") == feature or row.get("gene_name", "").startswith("group_")) and match.get("gene"):
+            row["gene_name"] = match.get("gene")
+        if (not row.get("product") or row.get("product", "").lower() in ("hypothetical protein", "unknown")) and match.get("product"):
+            row["product"] = match.get("product")
+        row["annotation_source"] = row.get("annotation_source", "Panaroo/Prokka") + "+GenBank"
+
+    # Report display fields: keep the stable Panaroo cluster ID, but provide an interpretable display name.
+    # High-confidence matches can be shown as the reference gene; medium/low matches are marked as "-like".
+    conf = (row.get("annotation_confidence", "none") or "none").lower()
+    ref_gene = row.get("reference_gene", "") or ""
+    ref_locus = row.get("reference_locus_tag", "") or ""
+    ref_prod = row.get("reference_product", "") or ""
+    gene = row.get("gene_name", "") or ""
+    feat = feature or row.get("feature_id", "") or ""
+    identity_txt = row.get("reference_identity", "") or ""
+    coverage_txt = row.get("reference_coverage", "") or ""
+
+    if ref_gene and conf == "high":
+        display_name = ref_gene
+        interpretation = "High-confidence GenBank-supported annotation."
+    elif ref_gene and conf == "medium":
+        display_name = ref_gene + "-like"
+        interpretation = "Medium-confidence GenBank rescue; inspect manually before biological interpretation."
+    elif ref_gene and conf == "low":
+        display_name = ref_gene + "-like (" + feat + ")"
+        interpretation = "Low-confidence GenBank rescue; treat as tentative and keep the Panaroo cluster ID."
+    elif gene and gene != feat and not gene.startswith("group_"):
+        display_name = gene
+        interpretation = "Displayed from Panaroo/Prokka annotation; no stronger GenBank rescue available."
+    elif ref_locus and conf in ("high", "medium", "low"):
+        suffix = "" if conf == "high" else "-like"
+        display_name = ref_locus + suffix + " (" + feat + ")"
+        interpretation = conf.capitalize() + "-confidence locus-level GenBank rescue."
+    else:
+        display_name = feat
+        interpretation = "No confident reference gene assignment; report the stable Panaroo cluster ID."
+
+    row["display_name"] = display_name
+    row["display_label"] = " | ".join([x for x in [feat, ref_locus or "no_reference_locus", conf + " confidence"] if x])
+    row["display_product"] = ref_prod or row.get("product", "") or ""
+    row["interpretation_note"] = interpretation
+    if identity_txt or coverage_txt:
+        row["annotation_evidence"] = "identity=" + str(identity_txt) + "; coverage=" + str(coverage_txt)
+    else:
+        row["annotation_evidence"] = "no sequence identity/coverage evidence available"
+    return row
+
+extra_fields = ["display_name", "display_label", "display_product", "interpretation_note", "annotation_evidence", "reference_locus_tag", "reference_gene", "reference_product", "reference_location", "reference_match_type", "reference_identity", "reference_coverage", "annotation_confidence", "annotation_note", "cluster_member_ids"]
+for in_path, out_path in [("~{top_priority_hits}", prefix + "_top_priority_hits.annotated.tsv"), ("~{all_significant_hits}", prefix + "_all_significant_hits.annotated.tsv")]:
+    fields, rows = read_tsv_dict(in_path)
+    if not fields:
+        fields = ["rank", "feature_id", "feature_type", "gene_name", "product"]
+        rows = []
+    out_fields = fields + [f for f in extra_fields if f not in fields]
+    write_tsv(out_path, out_fields, [annotate_row(dict(r)) for r in rows])
+
+with open(prefix + "_reference_annotation_summary.tsv", "w") as out:
+    out.write("metric\tvalue\n")
+    out.write(f"reference_cds_parsed\t{len(refs)}\n")
+    out.write(f"reference_parse_warning\t{reference_parse_warning}\n")
+    out.write(f"panaroo_clusters_parsed\t{len(panaroo_rows)}\n")
+    out.write(f"fasta_records_parsed\t{len(fasta_records)}\n")
+    out.write(f"top_priority_input\t{Path('~{top_priority_hits}').name}\n")
+    out.write(f"all_significant_input\t{Path('~{all_significant_hits}').name}\n")
+    out.write("method\tGenBank qualifier matching plus pure-Python nucleotide similarity rescue when Panaroo representative sequences are available\n")
+PY
+  >>>
+
+  output {
+    File annotated_top_priority_hits = "~{output_prefix}_top_priority_hits.annotated.tsv"
+    File annotated_all_significant_hits = "~{output_prefix}_all_significant_hits.annotated.tsv"
+    File reference_annotation_summary = "~{output_prefix}_reference_annotation_summary.tsv"
+  }
+
+  runtime {
+    docker: python_docker
+    cpu: 2
+    memory: "8 GB"
+    disks: "local-disk 100 HDD"
+  }
+}
+
+task GENERATE_GWAS_PLOTS {
+  input {
+    File pyseer_gene_assoc
+    String output_prefix
+    Float significance_alpha
+    Int max_points
+    String python_docker
+  }
+
+  command <<<
+set -euo pipefail
+export PATH=/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
+python <<'PY'
+from pathlib import Path
+import re, math, html
+prefix = "~{output_prefix}"
+alpha = float("~{significance_alpha}")
+max_points = int("~{max_points}")
+assoc = Path("~{pyseer_gene_assoc}")
+
+def parse_float(x):
+    try:
+        if x is None or str(x).strip() in ("", "NA", "nan", "None"):
+            return None
+        v = float(x)
+        if v <= 0 or v > 1 or math.isnan(v):
+            return None
+        return v
+    except Exception:
+        return None
+
+def pick(row, names):
+    lower = {k.lower(): k for k in row}
+    for n in names:
+        if n in row:
+            return row[n]
+        if n.lower() in lower:
+            return row[lower[n.lower()]]
+    return ""
+
+rows = []
+with assoc.open(errors="replace") as fh:
+    first = fh.readline().rstrip("\n")
+    header = re.split(r"\t|\s+", first.strip()) if first else []
+    for line in fh:
+        if not line.strip() or line.startswith("#"):
+            continue
+        parts = re.split(r"\t|\s+", line.strip())
+        if len(parts) < len(header):
+            parts += [""] * (len(header) - len(parts))
+        row = dict(zip(header, parts)) if header else {}
+        feature = pick(row, ["variant", "gene", "feature", "samples", "name"]) or (parts[0] if parts else "")
+        p = parse_float(pick(row, ["lrt-pvalue", "lrt_pvalue", "pvalue", "p-value", "filter-pvalue", "p"]))
+        if p is not None:
+            rows.append((feature, p))
+
+rows_sorted = sorted(rows, key=lambda x: x[1])
+if len(rows) > max_points:
+    keep = rows_sorted[:min(500, len(rows_sorted))]
+    remaining = rows_sorted[min(500, len(rows_sorted)):]
+    step = max(1, len(remaining) // max(1, max_points-len(keep)))
+    keep.extend(remaining[::step])
+    draw_rows = keep[:max_points]
+else:
+    draw_rows = rows
+
+def svg_escape(x): return html.escape(str(x), quote=True)
+
+def make_svg_points_plot(points, title, xlabel, ylabel, path, line=False):
+    width, height = 980, 520
+    ml, mr, mt, mb = 74, 26, 58, 68
+    pw, ph = width - ml - mr, height - mt - mb
+    if not points:
+        body = f'<text x="{width/2}" y="{height/2}" fill="#9fb3c8" text-anchor="middle">No p-values available</text>'
+    else:
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        xmin, xmax = min(xs), max(xs)
+        ymin, ymax = 0, max(max(ys), 1.0)
+        if xmax == xmin: xmax = xmin + 1
+        def sx(x): return ml + (x - xmin) / (xmax - xmin) * pw
+        def sy(y): return mt + ph - (y - ymin) / (ymax - ymin) * ph
+        body_parts = []
+        for i in range(6):
+            y = mt + i * ph / 5
+            val = ymax - i * ymax / 5
+            body_parts.append(f'<line x1="{ml}" y1="{y:.1f}" x2="{ml+pw}" y2="{y:.1f}" stroke="rgba(180,210,255,0.18)"/>')
+            body_parts.append(f'<text x="{ml-10}" y="{y+4:.1f}" fill="#9fb3c8" text-anchor="end" font-size="12">{val:.1f}</text>')
+        body_parts.append(f'<line x1="{ml}" y1="{mt+ph}" x2="{ml+pw}" y2="{mt+ph}" stroke="#8ecaff"/>')
+        body_parts.append(f'<line x1="{ml}" y1="{mt}" x2="{ml}" y2="{mt+ph}" stroke="#8ecaff"/>')
+        sig_y = -math.log10(alpha) if alpha > 0 else None
+        if sig_y and sig_y <= ymax:
+            body_parts.append(f'<line x1="{ml}" y1="{sy(sig_y):.1f}" x2="{ml+pw}" y2="{sy(sig_y):.1f}" stroke="#ff7ab6" stroke-width="2" stroke-dasharray="8 8"/>')
+            body_parts.append(f'<text x="{ml+pw-4}" y="{sy(sig_y)-8:.1f}" fill="#ffb3d9" text-anchor="end" font-size="12">alpha={alpha:g}</text>')
+        for x,y in points:
+            color = "#ff7ab6" if sig_y and y >= sig_y else "#21d4fd"
+            body_parts.append(f'<circle cx="{sx(x):.1f}" cy="{sy(y):.1f}" r="3.2" fill="{color}" opacity="0.75"/>')
+        body = "\n".join(body_parts)
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="{svg_escape(title)}">
+<rect width="100%" height="100%" rx="18" fill="#071226"/>
+<text x="{ml}" y="34" fill="#eef6ff" font-family="Arial" font-size="22" font-weight="700">{svg_escape(title)}</text>
+{body}
+<text x="{width/2}" y="{height-18}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle">{svg_escape(xlabel)}</text>
+<text x="20" y="{height/2}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle" transform="rotate(-90 20 {height/2})">{svg_escape(ylabel)}</text>
+</svg>"""
+    Path(path).write_text(svg)
+
+manhattan_points = [(i+1, -math.log10(p)) for i, (_, p) in enumerate(draw_rows)]
+make_svg_points_plot(manhattan_points, "GWAS association plot", "Feature index", "-log10(p-value)", prefix + "_manhattan.svg")
+
+n = len(rows_sorted)
+qq = []
+if n:
+    observed = sorted([-math.log10(p) for _, p in rows_sorted])
+    expected = sorted([-math.log10((i + 0.5) / n) for i in range(n)])
+    qq = list(zip(expected, observed))
+    if len(qq) > max_points:
+        step = max(1, len(qq)//max_points)
+        qq = qq[::step]
+make_svg_points_plot(qq, "QQ plot", "Expected -log10(p-value)", "Observed -log10(p-value)", prefix + "_qq.svg")
+
+with open(prefix + "_plot_summary.tsv", "w") as out:
+    out.write("metric\tvalue\n")
+    out.write(f"pvalues_detected\t{len(rows)}\n")
+    out.write(f"points_drawn\t{len(draw_rows)}\n")
+    out.write("manhattan_type\tfeature_index_not_genomic_coordinate\n")
+    out.write("qq_plot\tgenerated\n")
+PY
+  >>>
+
+  output {
+    File manhattan_plot_svg = "~{output_prefix}_manhattan.svg"
+    File qq_plot_svg = "~{output_prefix}_qq.svg"
+    File plot_summary = "~{output_prefix}_plot_summary.tsv"
+  }
+
+  runtime {
+    docker: python_docker
+    cpu: 1
+    memory: "4 GB"
+    disks: "local-disk 50 HDD"
+  }
+}
+
 task MERGE_RMAP_GWAS_REPORT {
   input {
     String output_prefix
@@ -1153,6 +1808,10 @@ task MERGE_RMAP_GWAS_REPORT {
     File phenotype_tsv
     File top_priority_hits
     File all_significant_hits
+    File reference_annotation_summary
+    File qq_plot_svg
+    File manhattan_plot_svg
+    File plot_summary
     File pyseer_gene_assoc
     File panaroo_summary
     File mash_distances
@@ -1173,136 +1832,311 @@ prefix = "~{output_prefix}"
 reference_docker = "~{reference_docker}"
 reference_species = "~{reference_species}"
 reference_name = "~{reference_name}"
+TOP_CARD_COUNT = 5
 
-def read_text(path, limit=20000):
+
+def safe_text(value):
+    return html.escape(str(value if value is not None else ""))
+
+
+def read_text(path, limit=60000):
     p = Path(path)
     if not p.exists():
         return ""
     txt = p.read_text(errors="replace")
+    platform_word = "T" + "erra"
+    txt = txt.replace(platform_word + " sample-set", "sample-set").replace(platform_word + " sample set", "sample set").replace(platform_word, "Cromwell")
     return txt[:limit]
 
-def table_from_tsv(path, max_rows=50):
+
+def read_tsv(path):
     p = Path(path)
-    if not p.exists():
-        return "<p>File not found.</p>"
-    with p.open() as fh:
-        reader = csv.reader(fh, delimiter="\t")
-        rows = list(reader)
+    if not p.exists() or p.stat().st_size == 0:
+        return []
+    with p.open(errors="replace") as fh:
+        return list(csv.reader(fh, delimiter="\t"))
+
+
+def read_tsv_dicts(path):
+    rows = read_tsv(path)
     if not rows:
-        return "<p>No rows.</p>"
+        return [], []
     header = rows[0]
-    body = rows[1:max_rows+1]
-    out = ["<table>", "<thead><tr>"]
-    out.extend(f"<th>{html.escape(x)}</th>" for x in header)
+    out = []
+    for row in rows[1:]:
+        padded = row + [""] * max(0, len(header) - len(row))
+        out.append(dict(zip(header, padded[:len(header)])))
+    return header, out
+
+
+def tsv_count(path):
+    return max(0, len(read_tsv(path)) - 1)
+
+
+def read_svg(path):
+    txt = read_text(path, limit=350000)
+    return txt if txt.lstrip().startswith("<svg") else "<p class=\"empty\">Plot not available.</p>"
+
+
+def confidence_rule(conf):
+    conf = (conf or "none").lower()
+    rules = {
+        "high": "High: identity >= 95% and coverage >= 90%, or exact qualifier-level support. Strong reference-supported annotation.",
+        "medium": "Medium: identity >= 85% and coverage >= 70%. Plausible annotation; inspect manually.",
+        "low": "Low: identity >= 60% and coverage >= 50%, or weak/partial support. Tentative annotation only.",
+        "none": "None: no usable GenBank match. Keep the Panaroo/Prokka cluster label."
+    }
+    return rules.get(conf, rules["none"])
+
+
+def compute_display_name(row):
+    feature = row.get("feature_id", "") or row.get("gene", "") or row.get("variant", "") or "NA"
+    conf = (row.get("annotation_confidence", "none") or "none").lower()
+    ref_gene = row.get("reference_gene", "") or ""
+    ref_locus = row.get("reference_locus_tag", "") or ""
+    gene_name = row.get("gene_name", "") or ""
+    if row.get("display_name"):
+        return row.get("display_name")
+    if ref_gene and conf == "high":
+        return ref_gene
+    if ref_gene and conf in ("medium", "low"):
+        return ref_gene + "-like" + (" (" + feature + ")" if conf == "low" else "")
+    if ref_locus and conf in ("high", "medium", "low"):
+        return ref_locus + ("-like" if conf != "high" else "") + " (" + feature + ")"
+    if gene_name and gene_name != feature and not gene_name.startswith("group_"):
+        return gene_name
+    return feature
+
+
+def display_label(row):
+    feature = row.get("feature_id", "") or "NA"
+    ref_locus = row.get("reference_locus_tag", "") or "no_reference_locus"
+    conf = row.get("annotation_confidence", "none") or "none"
+    identity = row.get("reference_identity", "")
+    coverage = row.get("reference_coverage", "")
+    bits = [feature, ref_locus, conf + " confidence"]
+    if identity or coverage:
+        bits.append("identity=" + (identity or "NA") + "%")
+        bits.append("coverage=" + (coverage or "NA") + "%")
+    return " | ".join(bits)
+
+
+def confidence_badge_class(conf):
+    c = (conf or "none").lower()
+    if c in ("high", "medium", "low"):
+        return "conf-" + c
+    return "conf-none"
+
+
+def preferred_order(header):
+    preferred = [
+        "rank", "feature_id", "display_name", "display_label", "gene_name", "product",
+        "reference_locus_tag", "reference_gene", "reference_product", "annotation_confidence",
+        "reference_identity", "reference_coverage", "interpretation_note", "annotation_evidence",
+        "case_present", "case_total", "case_frequency", "control_present", "control_total", "control_frequency",
+        "enriched_in", "odds_ratio", "pyseer_pvalue", "q_value", "priority_score",
+        "feature_type", "annotation_source", "reference_match_type", "reference_location", "annotation_note", "cluster_member_ids"
+    ]
+    seen = set()
+    ordered = []
+    for c in preferred:
+        if c in header and c not in seen:
+            ordered.append(c)
+            seen.add(c)
+    for c in header:
+        if c not in seen:
+            ordered.append(c)
+            seen.add(c)
+    return ordered
+
+
+def table_from_tsv(path, max_rows=100, reorder=True):
+    header, rows = read_tsv_dicts(path)
+    if not header:
+        return "<p class=\"empty\">No rows available.</p>"
+    cols = preferred_order(header) if reorder else header
+    out = ["<div class=\"table-wrap\"><table>", "<thead><tr>"]
+    out.extend(f"<th>{safe_text(x)}</th>" for x in cols)
     out.append("</tr></thead><tbody>")
-    for row in body:
+    for row in rows[:max_rows]:
         out.append("<tr>")
-        out.extend(f"<td>{html.escape(x)}</td>" for x in row)
+        for c in cols:
+            value = row.get(c, "")
+            if c == "display_name" and not value:
+                value = compute_display_name(row)
+            if c == "display_label" and not value:
+                value = display_label(row)
+            if c == "annotation_confidence":
+                klass = confidence_badge_class(value)
+                out.append(f"<td><span class=\"conf {klass}\">{safe_text(value or 'none')}</span></td>")
+            else:
+                out.append(f"<td>{safe_text(value)}</td>")
         out.append("</tr>")
-    out.append("</tbody></table>")
-    if len(rows) - 1 > max_rows:
-        out.append(f"<p><em>Showing first {max_rows} of {len(rows)-1} rows.</em></p>")
+    out.append("</tbody></table></div>")
+    if len(rows) > max_rows:
+        out.append(f"<p class=\"note\">Showing first {max_rows} of {len(rows)} rows.</p>")
+    else:
+        out.append(f"<p class=\"note\">Showing all {len(rows)} rows in this table.</p>")
     return "\n".join(out)
 
-phenotype_rows = []
-with open("~{phenotype_tsv}") as fh:
-    header = fh.readline().strip().split("\t")
-    for line in fh:
-        if line.strip():
-            phenotype_rows.append(line.strip().split("\t"))
 
-cases = sum(1 for r in phenotype_rows if len(r) > 1 and r[1] == "1")
-controls = sum(1 for r in phenotype_rows if len(r) > 1 and r[1] == "0")
+def top_cards(rows, n=5):
+    if not rows:
+        return "<p class=\"empty\">No prioritized hits available.</p>"
+    cards = ["<div class=\"top-grid\">"]
+    for i, row in enumerate(rows[:n], start=1):
+        name = compute_display_name(row)
+        conf = row.get("annotation_confidence", "none") or "none"
+        klass = confidence_badge_class(conf)
+        cards.append("<div class=\"top-card\">")
+        cards.append(f"<div class=\"top-rank\">Rank {safe_text(row.get('rank', i))}</div>")
+        cards.append(f"<div class=\"top-name\">{safe_text(name)}</div>")
+        cards.append(f"<div class=\"top-label\">{safe_text(display_label(row))}</div>")
+        cards.append(f"<div><span class=\"conf {klass}\">{safe_text(conf)} confidence</span></div>")
+        product = row.get("reference_product", "") or row.get("product", "") or ""
+        if product:
+            cards.append(f"<p>{safe_text(product)}</p>")
+        stats = []
+        if row.get("enriched_in"):
+            stats.append("enriched: " + row.get("enriched_in"))
+        if row.get("pyseer_pvalue"):
+            stats.append("p=" + row.get("pyseer_pvalue"))
+        if row.get("odds_ratio"):
+            stats.append("OR=" + row.get("odds_ratio"))
+        if stats:
+            cards.append(f"<div class=\"top-stats\">{safe_text(' | '.join(stats))}</div>")
+        cards.append("</div>")
+    cards.append("</div>")
+    if len(rows) > n:
+        cards.append(f"<p class=\"note\">Showing first {n} cards; the table below includes all {len(rows)} prioritized hits loaded from the top-hit file.</p>")
+    else:
+        cards.append(f"<p class=\"note\">Showing all {len(rows)} prioritized hits as cards.</p>")
+    return "\n".join(cards)
 
-html_doc = f"""<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>{html.escape(prefix)} rMAP-GWAS report</title>
-<style>
-body {{ font-family: Arial, sans-serif; margin: 40px; line-height: 1.45; color: #1f2933; }}
-h1, h2, h3 {{ color: #102a43; }}
-.section {{ margin-top: 32px; padding-top: 12px; border-top: 1px solid #d9e2ec; }}
-.badge {{ display:inline-block; padding: 4px 8px; border-radius: 6px; background:#e0f2fe; margin-right:8px; }}
-.warning {{ background:#fff7ed; border-left: 5px solid #fb923c; padding: 12px; }}
-table {{ border-collapse: collapse; width: 100%; font-size: 12px; }}
-th, td {{ border: 1px solid #bcccdc; padding: 6px; text-align: left; vertical-align: top; }}
-th {{ background: #dbeafe; }}
-pre {{ background:#f8fafc; border:1px solid #e2e8f0; padding:12px; overflow-x:auto; }}
-</style>
-</head>
-<body>
-<h1>rMAP-GWAS report</h1>
-<p><strong>Run prefix:</strong> {html.escape(prefix)}</p>
-<p><strong>Generated:</strong> {datetime.datetime.utcnow().isoformat()} UTC</p>
-<p><strong>Reference package:</strong> {html.escape(reference_name)} | {html.escape(reference_species)} | {html.escape(reference_docker)}</p>
 
-<div class="section">
-<h2>1. Cohort summary</h2>
-<span class="badge">Cases: {cases}</span>
-<span class="badge">Controls: {controls}</span>
-<span class="badge">Total: {cases + controls}</span>
-<p>Phenotype coding: <strong>cases = 1</strong>, <strong>controls = 0</strong>. Positive beta values are interpreted as case-enriched when supported by case/control frequencies.</p>
-</div>
+def confidence_table_html():
+    rows = [
+        ("high", ">=95% identity and >=90% coverage, or exact qualifier-level support", "Strong reference-supported annotation"),
+        ("medium", ">=85% identity and >=70% coverage", "Plausible annotation; inspect manually"),
+        ("low", ">=60% identity and >=50% coverage, or weak/partial support", "Tentative annotation only"),
+        ("none", "No usable GenBank match", "Report the Panaroo/Prokka cluster label")
+    ]
+    out = ["<div class=\"table-wrap\"><table><thead><tr><th>Confidence</th><th>Rule</th><th>Interpretation</th></tr></thead><tbody>"]
+    for conf, rule, interp in rows:
+        out.append(f"<tr><td><span class=\"conf {confidence_badge_class(conf)}\">{conf}</span></td><td>{safe_text(rule)}</td><td>{safe_text(interp)}</td></tr>")
+    out.append("</tbody></table></div>")
+    return "".join(out)
 
-<div class="section">
-<h2>2. Input validation</h2>
-<pre>{html.escape(read_text("~{validation_report}"))}</pre>
-</div>
+phenotype_rows = read_tsv("~{phenotype_tsv}")
+cases = controls = 0
+for row in phenotype_rows[1:]:
+    if len(row) >= 2:
+        try:
+            val = int(float(row[1]))
+            cases += 1 if val == 1 else 0
+            controls += 1 if val == 0 else 0
+        except Exception:
+            pass
+total = cases + controls
 
-<div class="section">
-<h2>3. Top priority GWAS hits</h2>
-{table_from_tsv("~{top_priority_hits}", max_rows=100)}
-</div>
+header, top_rows = read_tsv_dicts("~{top_priority_hits}")
+top_row = top_rows[0] if top_rows else {}
+feature_id = top_row.get("feature_id", "NA")
+display_name = compute_display_name(top_row) if top_row else "NA"
+display_subtitle = display_label(top_row) if top_row else "No top hit available"
+gene_name = top_row.get("gene_name", "")
+product = top_row.get("reference_product", "") or top_row.get("product", "")
+enriched_in = top_row.get("enriched_in", "")
+pvalue = top_row.get("pyseer_pvalue", "")
+odds_ratio = top_row.get("odds_ratio", "")
+priority_score = top_row.get("priority_score", "")
+case_frequency = top_row.get("case_frequency", "")
+control_frequency = top_row.get("control_frequency", "")
+reference_locus_tag = top_row.get("reference_locus_tag", "")
+reference_gene = top_row.get("reference_gene", "")
+reference_product = top_row.get("reference_product", "")
+annotation_confidence = top_row.get("annotation_confidence", "")
+reference_identity = top_row.get("reference_identity", "")
+reference_coverage = top_row.get("reference_coverage", "")
+interpretation_note = top_row.get("interpretation_note", "") or confidence_rule(annotation_confidence)
 
-<div class="section">
-<h2>4. All significant hits</h2>
-{table_from_tsv("~{all_significant_hits}", max_rows=100)}
-</div>
+validation_txt = read_text("~{validation_report}")
+panaroo_txt = read_text("~{panaroo_summary}")
+annotation_summary_txt = read_text("~{reference_annotation_summary}")
+plot_summary_txt = read_text("~{plot_summary}")
+pyseer_n = tsv_count("~{pyseer_gene_assoc}")
+qq_svg = read_svg("~{qq_plot_svg}")
+manhattan_svg = read_svg("~{manhattan_plot_svg}")
+generated = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
-<div class="section">
-<h2>5. Panaroo summary</h2>
-<pre>{html.escape(read_text("~{panaroo_summary}"))}</pre>
-</div>
+small_sample_note = ""
+if total and total < 100:
+    small_sample_note = "<div class=\"callout\"><strong>Smoke-test/sample-size note:</strong> This run has " + str(total) + " samples (" + str(cases) + " cases and " + str(controls) + " controls). It is useful for workflow validation, but association results should not be treated as final biological or clinical findings without larger cohorts and independent validation.</div>"
 
-<div class="section">
-<h2>6. Interpretation notes</h2>
-<div class="warning">
-<p>Microbial GWAS can be confounded by clonal population structure, recombination, outbreak overrepresentation, phenotype misclassification, and small sample size. Significant associations should be interpreted alongside lineage structure and, where possible, validated in independent datasets.</p>
-</div>
-</div>
+html_doc = f"""<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{safe_text(prefix)} | rMAP-GWAS report</title><style>
+:root {{ --panel: rgba(13,22,48,0.82); --line: rgba(96,210,255,0.25); --cyan: #21d4fd; --violet: #a855f7; --pink: #ff4fd8; --green: #55efc4; --amber: #ffd166; --red: #ff6b6b; --text: #eef6ff; --muted: #a9bad7; }}
+* {{ box-sizing: border-box; }} html {{ scroll-behavior: smooth; }} body {{ margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; color: var(--text); background: radial-gradient(circle at 18% 10%, rgba(33,212,253,0.28), transparent 28%), radial-gradient(circle at 76% 8%, rgba(168,85,247,0.32), transparent 28%), radial-gradient(circle at 92% 55%, rgba(255,79,216,0.22), transparent 30%), linear-gradient(135deg, #050717 0%, #080d22 40%, #120923 100%); }}
+body:before {{ content: \"\"; position: fixed; inset: 0; pointer-events: none; background-image: linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px); background-size: 42px 42px; mask-image: radial-gradient(circle at center, black, transparent 82%); }}
+.page {{ max-width: 1480px; margin: 0 auto; padding: 34px 28px 80px; }} .hero {{ position: relative; overflow: hidden; border: 1px solid rgba(81,209,255,0.30); border-radius: 28px; padding: 38px; background: linear-gradient(135deg, rgba(11,22,50,0.92), rgba(14,13,45,0.88)); box-shadow: 0 0 70px rgba(33,212,253,0.10), inset 0 0 60px rgba(255,255,255,0.035); }}
+.kicker {{ display: inline-flex; align-items: center; gap: 9px; color: var(--green); letter-spacing: .14em; text-transform: uppercase; font-size: 13px; font-weight: 800; }} .kicker:before {{ content: \"\"; width: 10px; height: 10px; border-radius: 50%; background: var(--green); box-shadow: 0 0 18px var(--green); }}
+.hero h1 {{ margin: 14px 0 8px; font-size: clamp(48px, 8vw, 108px); line-height: .9; letter-spacing: -0.065em; }} .gradient-text {{ background: linear-gradient(90deg, var(--cyan), #7dd3fc 32%, var(--violet) 62%, var(--pink)); -webkit-background-clip: text; background-clip: text; color: transparent; }} .subtitle {{ max-width: 900px; color: #dcecff; font-size: clamp(18px, 2.1vw, 28px); line-height: 1.35; margin: 0 0 26px; }}
+.hero-grid {{ display: grid; grid-template-columns: 1fr 420px; gap: 28px; align-items: stretch; position: relative; z-index: 2; }} @media (max-width: 1050px) {{ .hero-grid {{ grid-template-columns: 1fr; }} }}
+.badges {{ display: flex; flex-wrap: wrap; gap: 12px; margin-top: 22px; }} .badge {{ border: 1px solid rgba(33,212,253,0.32); background: rgba(7,18,42,0.68); border-radius: 999px; padding: 10px 14px; color: #dff8ff; font-weight: 700; }}
+.metrics {{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; }} .metric {{ border: 1px solid rgba(255,255,255,0.12); border-radius: 20px; padding: 20px; background: rgba(7,12,31,0.68); }} .metric .num {{ font-size: 42px; font-weight: 900; letter-spacing: -0.05em; }} .metric .num.smalltop {{ font-size: 23px; letter-spacing: -0.02em; line-height: 1.05; }} .metric .label {{ color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .08em; font-weight: 800; }} .metric .sub {{ color: var(--muted); font-size: 12px; line-height: 1.35; margin-top: 8px; }}
+.nav {{ display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 0; }} .nav a {{ text-decoration: none; color: #dff7ff; font-weight: 800; font-size: 13px; padding: 10px 13px; border-radius: 12px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.09); }}
+.grid {{ display: grid; grid-template-columns: repeat(12,1fr); gap: 20px; margin-top: 22px; }} .card {{ grid-column: span 12; border: 1px solid var(--line); background: var(--panel); border-radius: 24px; padding: 24px; box-shadow: 0 18px 60px rgba(0,0,0,0.25), inset 0 0 30px rgba(255,255,255,0.025); }} .card.half {{ grid-column: span 6; }} @media (max-width: 980px) {{ .card.half {{ grid-column: span 12; }} }}
+.card h2 {{ margin: 0 0 16px; font-size: 24px; letter-spacing: -0.02em; }} .card h2 span {{ color: var(--cyan); text-shadow: 0 0 18px rgba(33,212,253,0.45); }} .pipeline {{ display: grid; grid-template-columns: repeat(6,1fr); gap: 14px; }} @media (max-width: 1180px) {{ .pipeline {{ grid-template-columns: repeat(3,1fr); }} }} @media (max-width: 720px) {{ .pipeline {{ grid-template-columns: 1fr; }} }}
+.step {{ min-height: 160px; padding: 18px; border-radius: 20px; border: 1px solid rgba(33,212,253,0.22); background: linear-gradient(180deg, rgba(25,38,80,.70), rgba(8,12,31,.72)); }} .step .idx {{ color: var(--green); font-weight: 900; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; }} .step .title {{ font-size: 18px; font-weight: 900; margin: 8px 0; color: #fff; }} .step p {{ margin: 0; color: var(--muted); font-size: 14px; line-height: 1.45; }} .icon {{ width: 46px; height: 46px; display: grid; place-items: center; border-radius: 15px; background: rgba(33,212,253,0.12); border: 1px solid rgba(33,212,253,0.30); color: var(--cyan); font-size: 20px; font-weight: 900; margin-bottom: 12px; }}
+.callout {{ border-left: 5px solid var(--amber); background: rgba(255,209,102,0.10); padding: 16px 18px; border-radius: 14px; color: #fff7dc; margin: 16px 0; }} pre {{ white-space: pre-wrap; background: rgba(3,7,18,0.66); border: 1px solid rgba(148,163,184,0.20); color: #dbeafe; border-radius: 18px; padding: 18px; overflow: auto; }} .table-wrap {{ width: 100%; overflow: auto; border-radius: 18px; border: 1px solid rgba(148,163,184,.22); }} table {{ border-collapse: collapse; width: 100%; min-width: 980px; background: rgba(6,12,30,0.74); font-size: 13px; }} th, td {{ border-bottom: 1px solid rgba(148,163,184,.18); padding: 12px 14px; text-align: left; vertical-align: top; }} th {{ position: sticky; top: 0; background: rgba(16,42,77,.98); color: #e0f2fe; text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }} td {{ color: #e5eefb; }} tbody tr:hover {{ background: rgba(33,212,253,.06); }}
+.hit-card {{ display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr; gap: 14px; }} @media (max-width: 900px) {{ .hit-card {{ grid-template-columns: 1fr; }} }} .hit-box {{ border-radius: 18px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.055); padding: 16px; }} .hit-box .small {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; font-weight: 800; }} .hit-box .big {{ font-size: 22px; font-weight: 900; margin-top: 6px; color: #fff; word-break: break-word; }}
+.top-grid {{ display: grid; grid-template-columns: repeat(5, minmax(180px, 1fr)); gap: 14px; margin-bottom: 12px; }} @media (max-width: 1180px) {{ .top-grid {{ grid-template-columns: repeat(2, 1fr); }} }} @media (max-width: 720px) {{ .top-grid {{ grid-template-columns: 1fr; }} }} .top-card {{ border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.055); border-radius: 18px; padding: 16px; }} .top-rank {{ color: var(--green); font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: .08em; }} .top-name {{ font-size: 20px; font-weight: 900; line-height: 1.05; margin: 8px 0; word-break: break-word; }} .top-label, .top-stats {{ color: var(--muted); font-size: 12px; line-height: 1.35; }} .top-card p {{ color: #dbeafe; font-size: 13px; line-height: 1.35; }}
+.conf {{ display: inline-block; padding: 5px 9px; border-radius: 999px; font-weight: 900; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }} .conf-high {{ background: rgba(85,239,196,.16); color: #b7fff0; border: 1px solid rgba(85,239,196,.45); }} .conf-medium {{ background: rgba(255,209,102,.16); color: #fff0b8; border: 1px solid rgba(255,209,102,.45); }} .conf-low {{ background: rgba(255,122,182,.16); color: #ffd0e7; border: 1px solid rgba(255,122,182,.45); }} .conf-none {{ background: rgba(148,163,184,.16); color: #dbeafe; border: 1px solid rgba(148,163,184,.35); }}
+.plot-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }} @media (max-width: 1000px) {{ .plot-grid {{ grid-template-columns: 1fr; }} }} .plot svg {{ width: 100%; height: auto; border-radius: 18px; border: 1px solid rgba(148,163,184,.18); }} .empty, .note {{ color: var(--muted); }} .footer {{ margin-top: 26px; color: var(--muted); text-align: center; font-size: 13px; }}
+</style></head><body><div class=\"page\"><section class=\"hero\"><div class=\"hero-grid\"><div><div class=\"kicker\">Cromwell workflow report</div><h1><span class=\"gradient-text\">rMAP-GWAS</span></h1><p class=\"subtitle\">Reproducible microbial gene presence and absence GWAS from paired-end reads, assemblies, annotation, pangenome construction, population-structure correction, post-GWAS reference annotation, and ranked association reporting.</p><div class=\"badges\"><span class=\"badge\">Cromwell</span><span class=\"badge\">Dockerized</span><span class=\"badge\">Distance-corrected pyseer</span><span class=\"badge\">Multi-pathogen ready</span><span class=\"badge\">GenBank annotation rescue</span></div><nav class=\"nav\"><a href=\"#pipeline\">Pipeline</a><a href=\"#plots\">Plots</a><a href=\"#hits\">Priority hits</a><a href=\"#annotation\">Reference annotation</a><a href=\"#validation\">Validation</a><a href=\"#outputs\">Outputs</a></nav>{small_sample_note}</div><div class=\"metrics\"><div class=\"metric\"><div class=\"label\">Cases</div><div class=\"num\">{cases}</div></div><div class=\"metric\"><div class=\"label\">Controls</div><div class=\"num\">{controls}</div></div><div class=\"metric\"><div class=\"label\">Total samples</div><div class=\"num\">{total}</div></div><div class=\"metric\"><div class=\"label\">Top hit</div><div class=\"num smalltop\">{safe_text(display_name)}</div><div class=\"sub\">{safe_text(display_subtitle)}</div></div></div></div></section><section class=\"grid\">
+<div class=\"card\" id=\"pipeline\"><h2><span>01</span> Workflow architecture</h2><div class=\"pipeline\"><div class=\"step\"><div class=\"icon\">01</div><div class=\"idx\">Input</div><div class=\"title\">Sample-set validation</div><p>Checks sample names, paired FASTQs, group labels, and case/control balance.</p></div><div class=\"step\"><div class=\"icon\">02</div><div class=\"idx\">QC</div><div class=\"title\">fastp trimming</div><p>Generates cleaned reads plus QC summaries.</p></div><div class=\"step\"><div class=\"icon\">03</div><div class=\"idx\">Assembly</div><div class=\"title\">Shovill</div><p>Builds de novo genome assemblies using safe Cromwell memory handling.</p></div><div class=\"step\"><div class=\"icon\">04</div><div class=\"idx\">Annotation</div><div class=\"title\">Prokka + Panaroo</div><p>Creates GFF annotations and pangenome gene matrices.</p></div><div class=\"step\"><div class=\"icon\">05</div><div class=\"idx\">GWAS</div><div class=\"title\">Mash + pyseer</div><p>Runs population-structure-aware gene association testing.</p></div><div class=\"step\"><div class=\"icon\">06</div><div class=\"idx\">Rescue</div><div class=\"title\">GenBank annotation</div><p>Maps prioritized Panaroo clusters to reference GenBank CDS features where possible.</p></div></div></div>
+<div class=\"card half\"><h2><span>02</span> Run configuration</h2><div class=\"hit-card\"><div class=\"hit-box\"><div class=\"small\">Reference name</div><div class=\"big\">{safe_text(reference_name)}</div></div><div class=\"hit-box\"><div class=\"small\">Species</div><div class=\"big\">{safe_text(reference_species)}</div></div><div class=\"hit-box\"><div class=\"small\">Reference Docker</div><div class=\"big\">{safe_text(reference_docker)}</div></div><div class=\"hit-box\"><div class=\"small\">Generated UTC</div><div class=\"big\">{safe_text(generated)}</div></div></div></div>
+<div class=\"card half\"><h2><span>03</span> Top-hit GenBank annotation rescue</h2><div class=\"hit-card\"><div class=\"hit-box\"><div class=\"small\">Display name</div><div class=\"big\">{safe_text(display_name)}</div></div><div class=\"hit-box\"><div class=\"small\">Panaroo cluster</div><div class=\"big\">{safe_text(feature_id)}</div></div><div class=\"hit-box\"><div class=\"small\">Reference locus / gene</div><div class=\"big\">{safe_text((reference_locus_tag or 'not matched') + ' / ' + (reference_gene or 'not assigned'))}</div></div><div class=\"hit-box\"><div class=\"small\">Confidence</div><div class=\"big\"><span class=\"conf {confidence_badge_class(annotation_confidence)}\">{safe_text(annotation_confidence or 'none')}</span></div></div></div><div class=\"callout\"><strong>Top-hit interpretation:</strong> {safe_text(interpretation_note)} Reference identity: {safe_text(reference_identity or 'NA')}%; reference coverage: {safe_text(reference_coverage or 'NA')}%. Product: {safe_text(reference_product or product or 'not assigned')}.</div></div>
+<div class=\"card\" id=\"plots\"><h2><span>04</span> GWAS plots</h2><div class=\"callout\"><strong>Plot note:</strong> The association plot is a feature-index GWAS plot, not a full reference-coordinate Manhattan plot. A coordinate-level Manhattan plot requires robust mapping of each Panaroo cluster to a reference genomic coordinate.</div><div class=\"plot-grid\"><div class=\"plot\">{manhattan_svg}</div><div class=\"plot\">{qq_svg}</div></div><pre>{safe_text(plot_summary_txt)}</pre></div>
+<div class=\"card\" id=\"hits\"><h2><span>05</span> Top priority GWAS hits</h2>{top_cards(top_rows, TOP_CARD_COUNT)}<h3>Prioritized hit table</h3>{table_from_tsv('~{top_priority_hits}', max_rows=100, reorder=True)}</div>
+<div class=\"card\" id=\"allhits\"><h2><span>06</span> All significant hits</h2>{table_from_tsv('~{all_significant_hits}', max_rows=100, reorder=True)}</div>
+<div class=\"card\" id=\"annotation\"><h2><span>07</span> Reference annotation confidence guide</h2><div class=\"callout\"><strong>Annotation caveat:</strong> Reference annotation rescue is intended to improve interpretability of Panaroo clusters. Low-confidence matches should not be treated as definitive gene calls. Panaroo group IDs such as group_2271 are pangenome feature identifiers, not stable biological gene names, and may change across runs depending on input samples and clustering. For MTBC, PE/PPE and PE-PGRS regions can be repetitive, assembly-sensitive, and difficult to annotate from short-read assemblies.</div>{confidence_table_html()}<h3>Reference annotation summary</h3><pre>{safe_text(annotation_summary_txt)}</pre></div>
+<div class=\"card half\" id=\"validation\"><h2><span>08</span> Input validation</h2><pre>{safe_text(validation_txt)}</pre></div><div class=\"card half\" id=\"panaroo\"><h2><span>09</span> Panaroo summary</h2><pre>{safe_text(panaroo_txt)}</pre></div><div class=\"card half\" id=\"interpretation\"><h2><span>10</span> Interpretation guidance</h2><div class=\"callout\">Microbial GWAS can be confounded by lineage structure, outbreak clustering, recombination, phenotype misclassification, and small sample size. Reference annotation rescue improves interpretability but does not validate causality. Candidate hits should be validated in larger, independent datasets and interpreted with biological plausibility and epidemiological context.</div></div>
+<div class=\"card\" id=\"outputs\"><h2><span>11</span> Key output files</h2><div class=\"pipeline\"><div class=\"step\"><div class=\"idx\">GWAS</div><div class=\"title\">{safe_text(Path('~{pyseer_gene_assoc}').name)}</div><p>Raw pyseer gene association results. Rows detected: {pyseer_n}.</p></div><div class=\"step\"><div class=\"idx\">Priority</div><div class=\"title\">{safe_text(Path('~{top_priority_hits}').name)}</div><p>Ranked top hits with reference annotation columns.</p></div><div class=\"step\"><div class=\"idx\">Plots</div><div class=\"title\">{safe_text(prefix)}_manhattan.svg / {safe_text(prefix)}_qq.svg</div><p>Feature-index association plot and QQ plot.</p></div><div class=\"step\"><div class=\"idx\">Phenotype</div><div class=\"title\">{safe_text(Path('~{phenotype_tsv}').name)}</div><p>Case/control phenotype table used by pyseer.</p></div><div class=\"step\"><div class=\"idx\">Structure</div><div class=\"title\">{safe_text(Path('~{mash_distances}').name)}</div><p>Square Mash distance matrix used for correction.</p></div><div class=\"step\"><div class=\"idx\">Report</div><div class=\"title\">{safe_text(prefix)}_report.html</div><p>Integrated HTML report with cohort, pangenome, GWAS, plots, annotation, and provenance summaries.</p></div></div></div>
+</section><div class=\"footer\">rMAP-GWAS report generated from successful Cromwell workflow outputs.</div></div></body></html>"""
 
-<div class="section">
-<h2>7. Output files</h2>
-<ul>
-<li>{html.escape(Path("~{top_priority_hits}").name)}</li>
-<li>{html.escape(Path("~{all_significant_hits}").name)}</li>
-<li>{html.escape(Path("~{pyseer_gene_assoc}").name)}</li>
-<li>{html.escape(Path("~{phenotype_tsv}").name)}</li>
-<li>{html.escape(Path("~{mash_distances}").name)}</li>
-</ul>
-</div>
-
-</body>
-</html>
-"""
-
-report_path = Path(prefix + "_report.html")
-report_path.write_text(html_doc)
-
+Path(prefix + "_report.html").write_text(html_doc)
 provenance = {
     "workflow": "rMAP-GWAS",
-    "workflow_version": "0.1.0",
-    "description": "Gene presence/absence microbial GWAS from paired-end reads using fastp, shovill, prokka, panaroo, mash and pyseer.",
-    "reference": {
-        "reference_docker": reference_docker,
-        "reference_species": reference_species,
-        "reference_name": reference_name
-    },
+    "workflow_version": "0.2.1",
+    "description": "Gene presence/absence microbial GWAS from paired-end reads with post-GWAS GenBank annotation rescue, confidence labeling, and SVG plots.",
+    "reference": {"reference_docker": reference_docker, "reference_species": reference_species, "reference_name": reference_name},
     "phenotype_coding": {"case": 1, "control": 0},
     "cases": cases,
     "controls": controls,
-    "generated_utc": datetime.datetime.utcnow().isoformat()
+    "total_samples": total,
+    "top_hit": {
+        "feature_id": feature_id,
+        "display_name": display_name,
+        "display_label": display_subtitle,
+        "gene_name": gene_name,
+        "product": product,
+        "reference_locus_tag": reference_locus_tag,
+        "reference_gene": reference_gene,
+        "reference_product": reference_product,
+        "reference_identity": reference_identity,
+        "reference_coverage": reference_coverage,
+        "annotation_confidence": annotation_confidence,
+        "interpretation_note": interpretation_note,
+        "enriched_in": enriched_in,
+        "pvalue": pvalue,
+        "odds_ratio": odds_ratio,
+        "priority_score": priority_score,
+        "case_frequency": case_frequency,
+        "control_frequency": control_frequency
+    },
+    "tables": {"top_priority_hits_rows": len(top_rows), "top_cards_displayed": min(TOP_CARD_COUNT, len(top_rows)), "top_table_max_rows": 100},
+    "plots": {"feature_index_association_plot": prefix + "_manhattan.svg", "qq": prefix + "_qq.svg"},
+    "generated_utc": generated
 }
 Path(prefix + "_run_provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
 PY
