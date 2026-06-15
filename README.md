@@ -760,8 +760,9 @@ The same rMAP-GWAS WDL can therefore be used across bacterial species by changin
 | ESKAPEE        | *Klebsiella pneumoniae*              | `gmboowa/rmap-gwas-kpneumo-refs:2026.06`      | `KPNEUMO_2026_06` (`GCF_000240185.1`)      |
 | ESKAPEE        | *Acinetobacter baumannii*            | `gmboowa/rmap-gwas-abaumannii-refs:2026.06`   | `ABAUMANNII_2026_06` (`GCF_000015425.1`)   |
 | ESKAPEE        | *Pseudomonas aeruginosa*             | `gmboowa/rmap-gwas-paeruginosa-refs:2026.06`  | `PAERUGINOSA_2026_06` (`GCF_000006765.1`)  |
-| ESKAPEE        | *Enterobacter* spp.                  | `gmboowa/rmap-gwas-enterobacter-refs:2026.06` | `ENTEROBACTER_2026_06` (`GCF_000025565.1`) |
+| ESKAPEE        | *Enterobacter cloacae*               | `gmboowa/rmap-gwas-enterobacter-refs:2026.06` | `ENTEROBACTER_2026_06` (`GCF_000025565.1`) |
 | ESKAPEE        | *Escherichia coli*                   | `gmboowa/rmap-gwas-ecoli-refs:2026.06`        | `ECOLI_2026_06` (`GCF_000005845.2`)        |
+
 ### Reference image contents
 
 Each species-specific reference image should contain at minimum:
