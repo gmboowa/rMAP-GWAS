@@ -752,11 +752,7 @@ Planned milestones:
 
 If you use `rMAP-GWAS`, please cite this repository & the core tools used in your analysis. A formal citation will be added once the workflow is released.
 
-Suggested citation format for now:
 
-```text
-Mboowa, G. rMAP-GWAS: rapid Microbial Analysis Pipeline for Genome-Wide Association Studies. GitHub: https://github.com/gmboowa/rMAP-GWAS
-```
 
 ---
 
