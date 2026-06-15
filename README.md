@@ -723,28 +723,91 @@ Example Cromwell command:
 java -jar cromwell.jar run rMAP_GWAS.wdl -i inputs/example_inputs.json
 ```
 ---
+## Docker images used by rMAP-GWAS
 
-## Development status
+rMAP-GWAS is fully containerized. Each major workflow step is controlled by a Docker image input, so users can run the same WDL across local Cromwell, cloud Cromwell, or other WDL-compatible execution environments.
 
-This repository is under active development.
+### Core workflow Docker images
 
-Planned milestones:
+| WDL input variable      | Default Docker image                                | Main tools / role                     | Workflow stage                                                                    |
+| ----------------------- | --------------------------------------------------- | ------------------------------------- | --------------------------------------------------------------------------------- |
+| `fastp_docker`          | `quay.io/biocontainers/fastp:0.23.4--hadf994f_2`    | `fastp`                               | Read trimming & FASTQ quality control                                           |
+| `shovill_docker`        | `quay.io/biocontainers/shovill:1.1.0--hdfd78af_1`   | `shovill`, SPAdes backend             | De novo genome assembly                                                           |
+| `quast_docker`          | `staphb/quast:5.2.0`                                | `QUAST`                               | Assembly quality assessment                                                       |
+| `prokka_docker`         | `staphb/prokka:1.14.6`                              | `Prokka`                              | Genome annotation & GFF generation                                              |
+| `panaroo_docker`        | `quay.io/biocontainers/panaroo:1.5.2--pyhdfd78af_0` | `Panaroo`                             | Pangenome construction & gene presence/absence matrix generation                |
+| `mash_docker`           | `gmboowa/rmap-gwas-pyseer-annotate:0.2`             | `Mash`, Python utilities              | Pairwise genome distance matrix generation                                        |
+| `pyseer_docker`         | `gmboowa/rmap-gwas-pyseer-annotate:0.2`             | `pyseer`                              | Gene presence/absence GWAS                                                        |
+| `python_docker`         | `gmboowa/rmap-gwas-pyseer-annotate:0.2`             | Python reporting and table utilities  | Validation, phenotype generation, prioritization, plots, and HTML report creation |
+| `hit_annotation_docker` | `gmboowa/rmap-gwas-pyseer-annotate:0.2`             | Python post-GWAS annotation utilities | GenBank-based annotation rescue of top GWAS hits                                  |
 
-- [ ] Create WDL skeleton
-- [ ] Add case/control input validation
-- [ ] Add phenotype table generation
-- [ ] Add read QC & trimming
-- [ ] Add assembly & assembly QC
-- [ ] Add Bakta/Prokka annotation
-- [ ] Add Panaroo gene matrix generation
-- [ ] Add unitig-caller feature generation
-- [ ] Add Mash distance matrix generation
-- [ ] Add pyseer unitig GWAS
-- [ ] Add pyseer gene GWAS
-- [ ] Add hit annotation & prioritization
-- [ ] Add portable HTML report
-- [ ] Add test dataset
-- [ ] Add Example JSON
+### Species-specific reference Docker images
+
+Species-specific reference images provide curated reference files used for provenance tracking & post-GWAS annotation rescue. Each reference image is expected to expose a reference GenBank file, preferably through:
+
+```text
+RMAP_GWAS_REFERENCE_GENBANK=/opt/rmap-gwas/refs/reference.genbank
+```
+
+The same rMAP-GWAS WDL can therefore be used across bacterial species by changing the `reference_docker`, `reference_name`, and `reference_species` inputs.
+
+| Pathogen group | Species / complex                    | Suggested `reference_docker`                  | Suggested `reference_name` | Suggested `reference_species`        |
+| -------------- | ------------------------------------ | --------------------------------------------- | -------------------------- | ------------------------------------ |
+| MTBC           | *Mycobacterium tuberculosis* complex | `gmboowa/rmap-gwas-mtbc-refs:2026.06`         | `MTBC_2026_06`             | `Mycobacterium tuberculosis complex` |
+| ESKAPEE        | *Enterococcus faecium*               | `gmboowa/rmap-gwas-efaecium-refs:2026.06`     | `EFAECIUM_2026_06`         | `Enterococcus faecium`               |
+| ESKAPEE        | *Staphylococcus aureus*              | `gmboowa/rmap-gwas-saureus-refs:2026.06`      | `SAUREUS_2026_06`          | `Staphylococcus aureus`              |
+| ESKAPEE        | *Klebsiella pneumoniae*              | `gmboowa/rmap-gwas-kpneumo-refs:2026.06`      | `KPNEUMO_2026_06`          | `Klebsiella pneumoniae`              |
+| ESKAPEE        | *Acinetobacter baumannii*            | `gmboowa/rmap-gwas-abaumannii-refs:2026.06`   | `ABAUMANNII_2026_06`       | `Acinetobacter baumannii`            |
+| ESKAPEE        | *Pseudomonas aeruginosa*             | `gmboowa/rmap-gwas-paeruginosa-refs:2026.06`  | `PAERUGINOSA_2026_06`      | `Pseudomonas aeruginosa`             |
+| ESKAPEE        | *Enterobacter* spp.                  | `gmboowa/rmap-gwas-enterobacter-refs:2026.06` | `ENTEROBACTER_2026_06`     | `Enterobacter spp.`                  |
+| ESKAPEE        | *Escherichia coli*                   | `gmboowa/rmap-gwas-ecoli-refs:2026.06`        | `ECOLI_2026_06`            | `Escherichia coli`                   |
+
+### Reference image contents
+
+Each species-specific reference image should contain at minimum:
+
+| File type                    | Recommended path                              | Purpose                                                                  |
+| ---------------------------- | --------------------------------------------- | ------------------------------------------------------------------------ |
+| Reference FASTA              | `/opt/rmap-gwas/refs/reference.fasta`         | Reference genome sequence                                                |
+| Reference GFF                | `/opt/rmap-gwas/refs/reference.gff`           | Reference feature coordinates                                            |
+| Reference GenBank            | `/opt/rmap-gwas/refs/reference.genbank`       | Gene, locus tag & product annotation for post-GWAS hit interpretation |
+| Optional trusted annotations | `/opt/rmap-gwas/refs/trusted_annotations.tsv` | Curated gene/product names or priority AMR/virulence annotations         |
+
+Recommended environment variables inside each reference image:
+
+```text
+RMAP_GWAS_REFERENCE_FASTA=/opt/rmap-gwas/refs/reference.fasta
+RMAP_GWAS_REFERENCE_GFF=/opt/rmap-gwas/refs/reference.gff
+RMAP_GWAS_REFERENCE_GENBANK=/opt/rmap-gwas/refs/reference.genbank
+RMAP_GWAS_TRUSTED_ANNOTATIONS=/opt/rmap-gwas/refs/trusted_annotations.tsv
+```
+
+### Example reference configuration
+
+For an MTBC run:
+
+```text
+reference_docker  = "gmboowa/rmap-gwas-mtbc-refs:2026.06"
+reference_name    = "MTBC_2026_06"
+reference_species = "Mycobacterium tuberculosis complex"
+```
+
+For a *Klebsiella pneumoniae* run:
+
+```text
+reference_docker  = "gmboowa/rmap-gwas-kpneumo-refs:2026.06"
+reference_name    = "KPNEUMO_2026_06"
+reference_species = "Klebsiella pneumoniae"
+```
+
+### Notes
+
+* The workflow uses Prokka-generated GFF files for Panaroo pangenome construction.
+* Panaroo gene clusters may appear as IDs such as `group_2270`.
+* The post-GWAS annotation rescue step maps prioritized Panaroo gene clusters back to the supplied species-specific GenBank reference, where possible.
+* The final HTML report includes GWAS hit tables, reference annotation rescue results, QQ plot, Manhattan-style feature plot & run provenance.
+* Docker image inputs can be updated as and when needed.
+
 
 ---
 
