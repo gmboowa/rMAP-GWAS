@@ -235,10 +235,11 @@ pyseer population-structure-aware association testing
 For MTBC runs, the workflow records the intended reference package:
 
 ```text
-reference_docker  = gmboowa/rmap-gwas-mtbc-refs:2026.06
-reference_species = Mycobacterium tuberculosis complex
-reference_name    = MTBC_2026_06
+`reference_docker`  = `gmboowa/rmap-gwas-mtbc-refs:2026.06`  
+`reference_species` = *Mycobacterium tuberculosis* complex  
+`reference_name`    = `MTBC_2026_06`
 ```
+
 
 These values are written into the final report and provenance JSON. They document the species/reference configuration used or intended for the analysis.
 
@@ -599,9 +600,9 @@ The final `rMAP_GWAS_report.html` should include:
 1. Run overview
 2. Input cohort summary
 3. Case/control balance
-4. Read QC and trimming summary
+4. Read QC & trimming summary
 5. Assembly QC summary
-6. Annotation and pangenome summary
+6. Annotation & pangenome summary
 7. Population structure summary
 8. GWAS model summary
 9. Manhattan plot
@@ -611,8 +612,8 @@ The final `rMAP_GWAS_report.html` should include:
 13. Control-enriched hits
 14. Annotated gene-level associations
 15. Annotated unitig/SNP-level associations
-16. Warnings and limitations
-17. Downloads and provenance
+16. Warnings & limitations
+17. Downloads & provenance
 
 ---
 
