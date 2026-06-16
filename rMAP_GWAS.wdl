@@ -21,6 +21,16 @@ workflow rMAP_GWAS {
     # Analysis controls
     Float min_af = 0.01
     Float max_af = 0.99
+
+    # Modular GWAS controls.
+    # Current gene presence/absence GWAS remains the default.
+    # Set do_snp_gwas=true to run the reference-based SNP GWAS branch
+    # for mutation-mediated phenotypes such as MTBC drug resistance.
+    String gwas_mode = "gene_presence_absence"
+    Boolean do_snp_gwas = false
+    Float snp_min_qual = 20.0
+    String container_backend = "docker"
+
     # Pyseer population-structure controls.
     # For small smoke tests, using too many MDS dimensions can make the null model singular.
     Int pyseer_max_dimensions = 2
@@ -47,6 +57,7 @@ workflow rMAP_GWAS {
     Int assembly_disk_gb = 200
     Int pangenome_disk_gb = 300
     Int gwas_disk_gb = 300
+    Int snp_disk_gb = 300
 
     # Docker images
     String fastp_docker = "quay.io/biocontainers/fastp:0.23.4--hadf994f_2"
@@ -58,6 +69,9 @@ workflow rMAP_GWAS {
     # Contains pyseer, mash, Python, pandas, numpy, scipy, statsmodels, scikit-learn and tqdm.
     String mash_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.2"
     String pyseer_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.2"
+    # Dedicated reference-based SNP-calling image. This keeps mapping/SNP calling
+    # separate from the pyseer/statistics image and avoids missing bwa/samtools/bcftools errors.
+    String snp_calling_docker = "staphb/snippy:4.6.0"
     String python_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.2"
     # Docker image used for post-GWAS reference annotation and plot generation.
     # Keep this Python-capable; the task uses pure Python and does not require BLAST.
@@ -71,9 +85,9 @@ workflow rMAP_GWAS {
   }
 
   # Use sample-set arrays directly.
-  Array[String] all_sample_names = sample_names
-  Array[File] all_read1s = read1s
-  Array[File] all_read2s = read2s
+  Array[String]+ all_sample_names = sample_names
+  Array[File]+ all_read1s = read1s
+  Array[File]+ all_read2s = read2s
 
   # Shovill checks usable RAM inside the VM and fails if --ram is >= available RAM.
   # Cromwell VMs expose slightly less usable RAM than the WDL runtime request, so keep
@@ -83,8 +97,8 @@ workflow rMAP_GWAS {
   call VALIDATE_SAMPLE_SET_INPUTS {
     input:
       sample_names = sample_names,
-      read1s = read1s,
-      read2s = read2s,
+      read1_count = length(read1s),
+      read2_count = length(read2s),
       groups = groups,
       case_label = case_label,
       control_label = control_label,
@@ -99,7 +113,8 @@ workflow rMAP_GWAS {
       case_label = case_label,
       control_label = control_label,
       output_prefix = output_prefix,
-      python_docker = python_docker
+      python_docker = python_docker,
+      validation_report = VALIDATE_SAMPLE_SET_INPUTS.validation_report
   }
 
   scatter (i in range(length(all_sample_names))) {
@@ -111,7 +126,8 @@ workflow rMAP_GWAS {
         threads = fastp_threads,
         memory_gb = fastp_memory_gb,
         disk_gb = fastp_disk_gb,
-        docker = fastp_docker
+        docker = fastp_docker,
+        validation_report = VALIDATE_SAMPLE_SET_INPUTS.validation_report
     }
 
     call SHOVILL_ASSEMBLE {
@@ -163,6 +179,14 @@ workflow rMAP_GWAS {
       docker = mash_docker
   }
 
+  call GENERATE_POPULATION_STRUCTURE_PLOTS {
+    input:
+      phenotype_tsv = PREPARE_PHENOTYPE_TABLE.phenotype_tsv,
+      mash_distances = MASH_DISTANCE_MATRIX.mash_distances,
+      output_prefix = output_prefix,
+      python_docker = python_docker
+  }
+
   call PYSEER_GENE_GWAS {
     input:
       phenotype_tsv = PREPARE_PHENOTYPE_TABLE.phenotype_tsv,
@@ -196,6 +220,75 @@ workflow rMAP_GWAS {
       reference_name = reference_name
   }
 
+  String snp_output_prefix = output_prefix + "_SNP"
+
+  call MAKE_SNP_GWAS_PLACEHOLDERS {
+    input:
+      output_prefix = snp_output_prefix,
+      python_docker = python_docker
+  }
+
+  if (do_snp_gwas) {
+    call SNP_CALLING_SNIPPY {
+      input:
+        sample_names = all_sample_names,
+        read1s = FASTP_TRIM.trimmed_read1,
+        read2s = FASTP_TRIM.trimmed_read2,
+        reference_fasta = EXTRACT_REFERENCE_GENBANK_FROM_DOCKER.reference_fasta,
+        snp_min_qual = snp_min_qual,
+        threads = gwas_threads,
+        memory_gb = gwas_memory_gb,
+        disk_gb = snp_disk_gb,
+        docker = snp_calling_docker
+    }
+
+    call PYSEER_SNP_GWAS {
+      input:
+        phenotype_tsv = PREPARE_PHENOTYPE_TABLE.phenotype_tsv,
+        snp_vcf = SNP_CALLING_SNIPPY.snp_vcf,
+        mash_distances = MASH_DISTANCE_MATRIX.mash_distances,
+        min_af = min_af,
+        max_af = max_af,
+        max_dimensions = pyseer_max_dimensions,
+        force_no_distances = pyseer_force_no_distances,
+        no_distances_fallback = pyseer_no_distances_fallback,
+        threads = gwas_threads,
+        memory_gb = gwas_memory_gb,
+        disk_gb = snp_disk_gb,
+        docker = pyseer_docker
+    }
+
+    call PRIORITIZE_SNP_GWAS_HITS {
+      input:
+        phenotype_tsv = PREPARE_PHENOTYPE_TABLE.phenotype_tsv,
+        pyseer_snp_assoc = PYSEER_SNP_GWAS.pyseer_snp_assoc,
+        snp_vcf = SNP_CALLING_SNIPPY.snp_vcf,
+        reference_genbank = EXTRACT_REFERENCE_GENBANK_FROM_DOCKER.reference_genbank,
+        significance_alpha = significance_alpha,
+        output_prefix = snp_output_prefix,
+        python_docker = python_docker
+    }
+
+    call GENERATE_SNP_GWAS_PLOTS {
+      input:
+        pyseer_snp_assoc = PYSEER_SNP_GWAS.pyseer_snp_assoc,
+        snp_vcf = SNP_CALLING_SNIPPY.snp_vcf,
+        output_prefix = snp_output_prefix,
+        significance_alpha = significance_alpha,
+        max_points = plot_max_points,
+        python_docker = python_docker
+    }
+  }
+
+  File snp_vcf_for_report = select_first([SNP_CALLING_SNIPPY.snp_vcf, MAKE_SNP_GWAS_PLACEHOLDERS.snp_vcf])
+  File snp_pyseer_assoc_for_report = select_first([PYSEER_SNP_GWAS.pyseer_snp_assoc, MAKE_SNP_GWAS_PLACEHOLDERS.pyseer_snp_assoc])
+  File snp_top_hits_for_report = select_first([PRIORITIZE_SNP_GWAS_HITS.snp_top_hits, MAKE_SNP_GWAS_PLACEHOLDERS.snp_top_hits])
+  File snp_all_significant_hits_for_report = select_first([PRIORITIZE_SNP_GWAS_HITS.snp_all_significant_hits, MAKE_SNP_GWAS_PLACEHOLDERS.snp_all_significant_hits])
+  File snp_summary_for_report = select_first([PRIORITIZE_SNP_GWAS_HITS.snp_summary, MAKE_SNP_GWAS_PLACEHOLDERS.snp_summary])
+  File snp_manhattan_plot_for_report = select_first([GENERATE_SNP_GWAS_PLOTS.snp_manhattan_plot_svg, MAKE_SNP_GWAS_PLACEHOLDERS.snp_manhattan_plot_svg])
+  File snp_qq_plot_for_report = select_first([GENERATE_SNP_GWAS_PLOTS.snp_qq_plot_svg, MAKE_SNP_GWAS_PLACEHOLDERS.snp_qq_plot_svg])
+  File snp_plot_summary_for_report = select_first([GENERATE_SNP_GWAS_PLOTS.snp_plot_summary, MAKE_SNP_GWAS_PLACEHOLDERS.snp_plot_summary])
+
   call ANNOTATE_GWAS_HITS_WITH_GENBANK {
     input:
       top_priority_hits = PRIORITIZE_GWAS_HITS.top_priority_hits,
@@ -214,6 +307,7 @@ workflow rMAP_GWAS {
     input:
       pyseer_gene_assoc = PYSEER_GENE_GWAS.pyseer_gene_assoc,
       output_prefix = output_prefix,
+      plot_label = "Gene presence/absence GWAS",
       significance_alpha = significance_alpha,
       max_points = plot_max_points,
       python_docker = python_docker
@@ -233,6 +327,20 @@ workflow rMAP_GWAS {
       pyseer_gene_assoc = PYSEER_GENE_GWAS.pyseer_gene_assoc,
       panaroo_summary = PANAROO_PANGENOME.panaroo_summary,
       mash_distances = MASH_DISTANCE_MATRIX.mash_distances,
+      population_pca_svg = GENERATE_POPULATION_STRUCTURE_PLOTS.pca_svg,
+      kinship_heatmap_svg = GENERATE_POPULATION_STRUCTURE_PLOTS.kinship_heatmap_svg,
+      population_structure_summary = GENERATE_POPULATION_STRUCTURE_PLOTS.population_structure_summary,
+      do_snp_gwas = do_snp_gwas,
+      gwas_mode = gwas_mode,
+      container_backend = container_backend,
+      snp_top_hits = snp_top_hits_for_report,
+      snp_all_significant_hits = snp_all_significant_hits_for_report,
+      snp_summary = snp_summary_for_report,
+      pyseer_snp_assoc = snp_pyseer_assoc_for_report,
+      snp_vcf = snp_vcf_for_report,
+      snp_qq_plot_svg = snp_qq_plot_for_report,
+      snp_manhattan_plot_svg = snp_manhattan_plot_for_report,
+      snp_plot_summary = snp_plot_summary_for_report,
       reference_docker = reference_docker,
       reference_species = reference_species,
       reference_name = reference_name,
@@ -249,6 +357,9 @@ workflow rMAP_GWAS {
     File gene_presence_absence_csv = PANAROO_PANGENOME.gene_presence_absence_csv
     File gene_presence_absence_rtab = PANAROO_PANGENOME.gene_presence_absence_rtab
     File mash_distances = MASH_DISTANCE_MATRIX.mash_distances
+    File population_pca_svg = GENERATE_POPULATION_STRUCTURE_PLOTS.pca_svg
+    File kinship_heatmap_svg = GENERATE_POPULATION_STRUCTURE_PLOTS.kinship_heatmap_svg
+    File population_structure_summary = GENERATE_POPULATION_STRUCTURE_PLOTS.population_structure_summary
     File pyseer_gene_assoc = PYSEER_GENE_GWAS.pyseer_gene_assoc
     File raw_top_priority_hits = PRIORITIZE_GWAS_HITS.top_priority_hits
     File raw_all_significant_hits = PRIORITIZE_GWAS_HITS.all_significant_hits
@@ -259,6 +370,17 @@ workflow rMAP_GWAS {
     File qq_plot_svg = GENERATE_GWAS_PLOTS.qq_plot_svg
     File manhattan_plot_svg = GENERATE_GWAS_PLOTS.manhattan_plot_svg
     File plot_summary = GENERATE_GWAS_PLOTS.plot_summary
+    File reference_fasta = EXTRACT_REFERENCE_GENBANK_FROM_DOCKER.reference_fasta
+    File reference_gff = EXTRACT_REFERENCE_GENBANK_FROM_DOCKER.reference_gff
+    File reference_genbank = EXTRACT_REFERENCE_GENBANK_FROM_DOCKER.reference_genbank
+    File snp_vcf = snp_vcf_for_report
+    File pyseer_snp_assoc = snp_pyseer_assoc_for_report
+    File snp_top_hits = snp_top_hits_for_report
+    File snp_all_significant_hits = snp_all_significant_hits_for_report
+    File snp_summary = snp_summary_for_report
+    File snp_manhattan_plot_svg = snp_manhattan_plot_for_report
+    File snp_qq_plot_svg = snp_qq_plot_for_report
+    File snp_plot_summary = snp_plot_summary_for_report
     File html_report = MERGE_RMAP_GWAS_REPORT.html_report
     File run_provenance = MERGE_RMAP_GWAS_REPORT.run_provenance_json
   }
@@ -267,8 +389,8 @@ workflow rMAP_GWAS {
 task VALIDATE_SAMPLE_SET_INPUTS {
   input {
     Array[String]+ sample_names
-    Array[File]+ read1s
-    Array[File]+ read2s
+    Int read1_count
+    Int read2_count
     Array[String]+ groups
     String case_label
     String control_label
@@ -280,8 +402,8 @@ set -euo pipefail
 export PATH=/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
 python <<'PY'
 sample_names = """~{sep='\n' sample_names}""".strip().splitlines()
-read1s = """~{sep='\n' read1s}""".strip().splitlines()
-read2s = """~{sep='\n' read2s}""".strip().splitlines()
+read1_count = int("~{read1_count}")
+read2_count = int("~{read2_count}")
 groups = """~{sep='\n' groups}""".strip().splitlines()
 case_label = "~{case_label}"
 control_label = "~{control_label}"
@@ -292,10 +414,10 @@ def norm(x):
 errors = []
 warnings = []
 
-if not (len(sample_names) == len(read1s) == len(read2s) == len(groups)):
+if not (len(sample_names) == read1_count == read2_count == len(groups)):
     errors.append(
         f"sample_names/read1s/read2s/groups have unequal lengths: "
-        f"sample_names={len(sample_names)}, read1s={len(read1s)}, read2s={len(read2s)}, groups={len(groups)}"
+        f"sample_names={len(sample_names)}, read1s={read1_count}, read2s={read2_count}, groups={len(groups)}"
     )
 
 if len(sample_names) != len(set(sample_names)):
@@ -381,6 +503,7 @@ task PREPARE_PHENOTYPE_TABLE {
     String control_label
     String output_prefix
     String python_docker
+    File validation_report
   }
 
   command <<<
@@ -449,6 +572,7 @@ task FASTP_TRIM {
     Int memory_gb
     Int disk_gb
     String docker
+    File validation_report
   }
 
   command <<<
@@ -593,7 +717,7 @@ cp prokka_out/~{sample_name}.ffn ~{sample_name}.ffn
 
 task PANAROO_PANGENOME {
   input {
-    Array[File]+ gffs
+    Array[File] gffs
     Int threads
     Int memory_gb
     Int disk_gb
@@ -719,8 +843,8 @@ for f in   panaroo_out/gene_data.csv   panaroo_out/combined_DNA_CDS.fasta   pana
 
 task MASH_DISTANCE_MATRIX {
   input {
-    Array[String]+ sample_names
-    Array[File]+ assemblies
+    Array[String] sample_names
+    Array[File] assemblies
     Int threads
     Int memory_gb
     Int disk_gb
@@ -1113,9 +1237,16 @@ for row in assoc_rows:
     else:
         neglog = -math.log10(stat)
 
-    odds_num = (case_present + 0.5) / (case_total - case_present + 0.5)
-    odds_den = (control_present + 0.5) / (control_total - control_present + 0.5)
-    odds_ratio = odds_num / odds_den if odds_den else float("inf")
+    # Haldane-Anscombe corrected odds ratio and 95% CI for binary phenotype.
+    a = case_present + 0.5
+    b = (case_total - case_present) + 0.5
+    c = control_present + 0.5
+    d = (control_total - control_present) + 0.5
+    odds_ratio = (a / b) / (c / d)
+    se_log_or = math.sqrt((1.0 / a) + (1.0 / b) + (1.0 / c) + (1.0 / d))
+    log_or = math.log(odds_ratio) if odds_ratio > 0 and math.isfinite(odds_ratio) else 0.0
+    or_ci_low = math.exp(log_or - 1.96 * se_log_or)
+    or_ci_high = math.exp(log_or + 1.96 * se_log_or)
     log2_or = math.log2(odds_ratio) if odds_ratio > 0 and math.isfinite(odds_ratio) else 0.0
 
     ann = annotations.get(feature, {})
@@ -1140,6 +1271,9 @@ for row in assoc_rows:
         "enriched_in": enriched_in,
         "beta": f"{beta:.6g}",
         "odds_ratio": f"{odds_ratio:.6g}" if math.isfinite(odds_ratio) else "Inf",
+        "odds_ratio_ci95_lower": f"{or_ci_low:.6g}",
+        "odds_ratio_ci95_upper": f"{or_ci_high:.6g}",
+        "odds_ratio_ci95": f"{or_ci_low:.4g}-{or_ci_high:.4g}",
         "pyseer_pvalue": "" if pval is None else f"{pval:.6g}",
         "q_value": "" if qval is None else f"{qval:.6g}",
         "priority_score": f"{priority_score:.4f}",
@@ -1159,7 +1293,7 @@ fields = [
     "rank", "feature_id", "feature_type", "gene_name", "product",
     "case_present", "case_total", "case_frequency",
     "control_present", "control_total", "control_frequency",
-    "enriched_in", "beta", "odds_ratio", "pyseer_pvalue", "q_value",
+    "enriched_in", "beta", "odds_ratio", "odds_ratio_ci95_lower", "odds_ratio_ci95_upper", "odds_ratio_ci95", "pyseer_pvalue", "q_value",
     "priority_score", "annotation_source", "notes"
 ]
 
@@ -1217,51 +1351,89 @@ set -euo pipefail
 {
   echo "Reference name: ~{reference_name}"
   echo "Reference docker: ~{reference_docker}"
-  echo "Searching for reference GenBank inside the reference image."
+  echo "Searching for reference FASTA, GFF and GenBank inside the reference image."
 } > reference_extract_log.txt
 
-candidate="${RMAP_GWAS_REFERENCE_GENBANK:-}"
-if [ -n "$candidate" ] && [ -s "$candidate" ]; then
-  cp "$candidate" reference.genbank
-  echo "Found GenBank through RMAP_GWAS_REFERENCE_GENBANK=$candidate" >> reference_extract_log.txt
-else
-  found=""
-  for p in \
-    /opt/rmap-gwas/refs/reference.genbank \
-    /opt/rmap-gwas/refs/reference.gbk \
-    /opt/rmap-gwas/refs/mtbc/reference.genbank \
-    /opt/rmap-gwas/refs/kpneumo/reference.genbank \
-    /refs/reference.genbank \
-    /data/reference.genbank
-  do
-    if [ -s "$p" ]; then
-      found="$p"
-      break
+copy_first_existing() {
+  local out="$1"
+  shift
+  for p in "$@"; do
+    if [ -n "$p" ] && [ -s "$p" ]; then
+      cp "$p" "$out"
+      echo "Found ${out}: ${p}" >> reference_extract_log.txt
+      return 0
     fi
   done
+  return 1
+}
 
-  if [ -z "$found" ]; then
-    found=$(find /opt /refs /data 2>/dev/null -type f \( -name "*.genbank" -o -name "*.gbk" -o -name "*.gb" \) | head -n 1 || true)
-  fi
+copy_first_existing reference.fasta \
+  "${RMAP_GWAS_REFERENCE_FASTA:-}" \
+  /opt/rmap-gwas/refs/reference.fasta \
+  /opt/rmap-gwas/refs/reference.fa \
+  /opt/rmap-gwas/refs/mtbc/reference.fasta \
+  /opt/rmap-gwas/refs/kpneumo/reference.fasta \
+  /opt/rmap-gwas/refs/ecoli/reference.fasta \
+  /opt/rmap-gwas/refs/enterococcus_faecium/reference.fasta \
+  /refs/reference.fasta \
+  /data/reference.fasta || true
 
-  if [ -n "$found" ] && [ -s "$found" ]; then
-    cp "$found" reference.genbank
-    echo "Found GenBank by search: $found" >> reference_extract_log.txt
-  fi
+copy_first_existing reference.gff \
+  "${RMAP_GWAS_REFERENCE_GFF:-}" \
+  /opt/rmap-gwas/refs/reference.gff \
+  /opt/rmap-gwas/refs/reference.gff3 \
+  /opt/rmap-gwas/refs/mtbc/reference.gff \
+  /opt/rmap-gwas/refs/kpneumo/reference.gff \
+  /opt/rmap-gwas/refs/ecoli/reference.gff \
+  /opt/rmap-gwas/refs/enterococcus_faecium/reference.gff \
+  /refs/reference.gff \
+  /data/reference.gff || true
+
+copy_first_existing reference.genbank \
+  "${RMAP_GWAS_REFERENCE_GENBANK:-}" \
+  /opt/rmap-gwas/refs/reference.genbank \
+  /opt/rmap-gwas/refs/reference.gbk \
+  /opt/rmap-gwas/refs/mtbc/reference.genbank \
+  /opt/rmap-gwas/refs/kpneumo/reference.genbank \
+  /opt/rmap-gwas/refs/ecoli/reference.genbank \
+  /opt/rmap-gwas/refs/enterococcus_faecium/reference.genbank \
+  /refs/reference.genbank \
+  /data/reference.genbank || true
+
+if [ ! -s reference.fasta ]; then
+  found=$(find /opt /refs /data 2>/dev/null -type f \( -name "*.fasta" -o -name "*.fa" -o -name "*.fna" \) | head -n 1 || true)
+  if [ -n "$found" ] && [ -s "$found" ]; then cp "$found" reference.fasta; echo "Found reference.fasta by search: $found" >> reference_extract_log.txt; fi
+fi
+if [ ! -s reference.gff ]; then
+  found=$(find /opt /refs /data 2>/dev/null -type f \( -name "*.gff" -o -name "*.gff3" \) | head -n 1 || true)
+  if [ -n "$found" ] && [ -s "$found" ]; then cp "$found" reference.gff; echo "Found reference.gff by search: $found" >> reference_extract_log.txt; fi
+fi
+if [ ! -s reference.genbank ]; then
+  found=$(find /opt /refs /data 2>/dev/null -type f \( -name "*.genbank" -o -name "*.gbk" -o -name "*.gb" \) | head -n 1 || true)
+  if [ -n "$found" ] && [ -s "$found" ]; then cp "$found" reference.genbank; echo "Found reference.genbank by search: $found" >> reference_extract_log.txt; fi
 fi
 
 if [ ! -s reference.genbank ]; then
   echo "ERROR: Could not find a non-empty GenBank file in the reference image." >&2
   cat reference_extract_log.txt >&2
-  echo "Expected either RMAP_GWAS_REFERENCE_GENBANK or a file such as /opt/rmap-gwas/refs/reference.genbank." >&2
   exit 1
 fi
+if [ ! -s reference.fasta ]; then
+  echo "WARNING: No reference FASTA found. SNP GWAS will fail if do_snp_gwas=true." >> reference_extract_log.txt
+  : > reference.fasta
+fi
+if [ ! -s reference.gff ]; then
+  echo "WARNING: No reference GFF found. SNP annotation will use GenBank only." >> reference_extract_log.txt
+  : > reference.gff
+fi
 
-ls -lh reference.genbank >> reference_extract_log.txt
+ls -lh reference.fasta reference.gff reference.genbank >> reference_extract_log.txt
 cat reference_extract_log.txt
   >>>
 
   output {
+    File reference_fasta = "reference.fasta"
+    File reference_gff = "reference.gff"
     File reference_genbank = "reference.genbank"
     File reference_extract_log = "reference_extract_log.txt"
   }
@@ -1297,6 +1469,9 @@ import csv, re, difflib
 from collections import defaultdict
 
 prefix = "~{output_prefix}"
+# Touch optional Panaroo annotation inputs so WDL validators know they are intentional task inputs.
+_ = Path("~{gene_data_csv}")
+_ = Path("~{combined_protein_cds}")
 
 def read_tsv_dict(path):
     p = Path(path)
@@ -1661,6 +1836,7 @@ task GENERATE_GWAS_PLOTS {
   input {
     File pyseer_gene_assoc
     String output_prefix
+    String plot_label
     Float significance_alpha
     Int max_points
     String python_docker
@@ -1673,6 +1849,7 @@ python <<'PY'
 from pathlib import Path
 import re, math, html
 prefix = "~{output_prefix}"
+plot_label = "~{plot_label}"
 alpha = float("~{significance_alpha}")
 max_points = int("~{max_points}")
 assoc = Path("~{pyseer_gene_assoc}")
@@ -1765,7 +1942,7 @@ def make_svg_points_plot(points, title, xlabel, ylabel, path, line=False):
     Path(path).write_text(svg)
 
 manhattan_points = [(i+1, -math.log10(p)) for i, (_, p) in enumerate(draw_rows)]
-make_svg_points_plot(manhattan_points, "GWAS association plot", "Feature index", "-log10(p-value)", prefix + "_manhattan.svg")
+make_svg_points_plot(manhattan_points, plot_label + " Manhattan-style association plot", "Feature index", "-log10(p-value)", prefix + "_manhattan.svg")
 
 n = len(rows_sorted)
 qq = []
@@ -1776,12 +1953,14 @@ if n:
     if len(qq) > max_points:
         step = max(1, len(qq)//max_points)
         qq = qq[::step]
-make_svg_points_plot(qq, "QQ plot", "Expected -log10(p-value)", "Observed -log10(p-value)", prefix + "_qq.svg")
+make_svg_points_plot(qq, plot_label + " QQ plot", "Expected -log10(p-value)", "Observed -log10(p-value)", prefix + "_qq.svg")
 
 with open(prefix + "_plot_summary.tsv", "w") as out:
     out.write("metric\tvalue\n")
     out.write(f"pvalues_detected\t{len(rows)}\n")
     out.write(f"points_drawn\t{len(draw_rows)}\n")
+    out.write(f"plot_label\t{plot_label}\n")
+    out.write(f"significant_points_at_alpha\t{sum(1 for _, p in rows if p <= alpha)}\n")
     out.write("manhattan_type\tfeature_index_not_genomic_coordinate\n")
     out.write("qq_plot\tgenerated\n")
 PY
@@ -1801,6 +1980,850 @@ PY
   }
 }
 
+task GENERATE_SNP_GWAS_PLOTS {
+  input {
+    File pyseer_snp_assoc
+    File snp_vcf
+    String output_prefix
+    Float significance_alpha
+    Int max_points
+    String python_docker
+  }
+
+  command <<<
+set -euo pipefail
+export PATH=/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
+python <<'PY'
+from pathlib import Path
+import re, math, html
+prefix = "~{output_prefix}"
+alpha = float("~{significance_alpha}")
+max_points = int("~{max_points}")
+assoc = Path("~{pyseer_snp_assoc}")
+vcf = Path("~{snp_vcf}")
+
+def parse_float(x):
+    try:
+        if x is None or str(x).strip() in ("", "NA", "nan", "None"):
+            return None
+        v = float(x)
+        if v <= 0 or v > 1 or math.isnan(v):
+            return None
+        return v
+    except Exception:
+        return None
+
+def pick(row, names):
+    lower = {k.lower(): k for k in row}
+    for n in names:
+        if n in row:
+            return row[n]
+        if n.lower() in lower:
+            return row[lower[n.lower()]]
+    return ""
+
+coord = {}
+with vcf.open(errors="replace") as fh:
+    for line in fh:
+        if line.startswith("#") or not line.strip():
+            continue
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) < 5:
+            continue
+        chrom, pos, vid, ref, alt = parts[:5]
+        marker_id = vid if vid not in ("", ".") else f"{chrom}_{pos}_{ref}_{alt}"
+        try:
+            p = int(pos)
+        except Exception:
+            p = None
+        rec = (chrom, p, marker_id)
+        for key in {marker_id, f"{chrom}_{pos}", f"{chrom}:{pos}", str(pos), f"{pos}_{ref}_{alt}"}:
+            coord[key] = rec
+
+rows = []
+with assoc.open(errors="replace") as fh:
+    first = fh.readline().rstrip("\n")
+    header = re.split(r"\t|\s+", first.strip()) if first else []
+    for line in fh:
+        if not line.strip() or line.startswith("#"):
+            continue
+        parts = re.split(r"\t|\s+", line.strip())
+        if len(parts) < len(header):
+            parts += [""] * (len(header) - len(parts))
+        row = dict(zip(header, parts)) if header else {}
+        feature = pick(row, ["variant", "feature", "name"]) or (parts[0] if parts else "")
+        pval = parse_float(pick(row, ["lrt-pvalue", "lrt_pvalue", "pvalue", "p-value", "filter-pvalue", "p"]))
+        if pval is None:
+            continue
+        chrom, pos, marker = coord.get(feature, ("", None, feature))
+        if pos is None:
+            nums = re.findall(r"\d+", feature)
+            pos = int(nums[0]) if nums else len(rows) + 1
+        rows.append({"feature": feature, "chrom": chrom, "position": pos, "p": pval})
+
+rows_sorted = sorted(rows, key=lambda r: (r["chrom"] or "zz_unknown", r["position"]))
+if len(rows_sorted) > max_points:
+    by_p = sorted(rows_sorted, key=lambda r: r["p"])
+    keep_ids = {id(r) for r in by_p[:min(500, len(by_p))]}
+    remaining = [r for r in rows_sorted if id(r) not in keep_ids]
+    step = max(1, len(remaining) // max(1, max_points - len(keep_ids)))
+    draw_rows = by_p[:min(500, len(by_p))] + remaining[::step]
+    draw_rows = draw_rows[:max_points]
+else:
+    draw_rows = rows_sorted
+
+offsets = {}
+current = 0
+for chrom in [] if not rows_sorted else sorted({r["chrom"] or "unknown" for r in rows_sorted}):
+    positions = [r["position"] for r in rows_sorted if (r["chrom"] or "unknown") == chrom]
+    offsets[chrom] = current
+    current += (max(positions) if positions else 0) + 1
+
+def svg_escape(x): return html.escape(str(x), quote=True)
+
+def make_svg_points_plot(points, title, xlabel, ylabel, path, draw_diag=False):
+    width, height = 980, 520
+    ml, mr, mt, mb = 74, 26, 58, 68
+    pw, ph = width - ml - mr, height - mt - mb
+    if not points:
+        body = f'<text x="{width/2}" y="{height/2}" fill="#9fb3c8" text-anchor="middle">No SNP p-values available</text>'
+    else:
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        xmin, xmax = min(xs), max(xs)
+        ymin, ymax = 0, max(max(ys), 1.0)
+        if xmax == xmin: xmax = xmin + 1
+        def sx(x): return ml + (x - xmin) / (xmax - xmin) * pw
+        def sy(y): return mt + ph - (y - ymin) / (ymax - ymin) * ph
+        body_parts = []
+        for i in range(6):
+            y = mt + i * ph / 5
+            val = ymax - i * ymax / 5
+            body_parts.append(f'<line x1="{ml}" y1="{y:.1f}" x2="{ml+pw}" y2="{y:.1f}" stroke="rgba(180,210,255,0.18)"/>')
+            body_parts.append(f'<text x="{ml-10}" y="{y+4:.1f}" fill="#9fb3c8" text-anchor="end" font-size="12">{val:.1f}</text>')
+        body_parts.append(f'<line x1="{ml}" y1="{mt+ph}" x2="{ml+pw}" y2="{mt+ph}" stroke="#8ecaff"/>')
+        body_parts.append(f'<line x1="{ml}" y1="{mt}" x2="{ml}" y2="{mt+ph}" stroke="#8ecaff"/>')
+        if draw_diag:
+            lim = min(max(xs), max(ys))
+            body_parts.append(f'<line x1="{sx(0):.1f}" y1="{sy(0):.1f}" x2="{sx(lim):.1f}" y2="{sy(lim):.1f}" stroke="rgba(255,255,255,0.35)" stroke-width="2"/>')
+        sig_y = -math.log10(alpha) if alpha > 0 else None
+        if sig_y and sig_y <= ymax:
+            body_parts.append(f'<line x1="{ml}" y1="{sy(sig_y):.1f}" x2="{ml+pw}" y2="{sy(sig_y):.1f}" stroke="#ff7ab6" stroke-width="2" stroke-dasharray="8 8"/>')
+            body_parts.append(f'<text x="{ml+pw-4}" y="{sy(sig_y)-8:.1f}" fill="#ffb3d9" text-anchor="end" font-size="12">alpha={alpha:g}</text>')
+        for x, y in points:
+            color = "#ff7ab6" if sig_y and y >= sig_y else "#21d4fd"
+            body_parts.append(f'<circle cx="{sx(x):.1f}" cy="{sy(y):.1f}" r="3.2" fill="{color}" opacity="0.75"/>')
+        body = "\n".join(body_parts)
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="{svg_escape(title)}">
+<rect width="100%" height="100%" rx="18" fill="#071226"/>
+<text x="{ml}" y="34" fill="#eef6ff" font-family="Arial" font-size="22" font-weight="700">{svg_escape(title)}</text>
+{body}
+<text x="{width/2}" y="{height-18}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle">{svg_escape(xlabel)}</text>
+<text x="20" y="{height/2}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle" transform="rotate(-90 20 {height/2})">{svg_escape(ylabel)}</text>
+</svg>'''
+    Path(path).write_text(svg)
+
+manhattan_points = []
+for r in draw_rows:
+    chrom = r["chrom"] or "unknown"
+    x = offsets.get(chrom, 0) + r["position"]
+    manhattan_points.append((x, -math.log10(r["p"])))
+make_svg_points_plot(manhattan_points, "SNP marker GWAS Manhattan plot", "Reference genomic coordinate / marker order", "-log10(p-value)", prefix + "_manhattan.svg")
+
+n = len(rows)
+qq = []
+if n:
+    observed = sorted([-math.log10(r["p"]) for r in rows])
+    expected = sorted([-math.log10((i + 0.5) / n) for i in range(n)])
+    qq = list(zip(expected, observed))
+    if len(qq) > max_points:
+        step = max(1, len(qq) // max_points)
+        qq = qq[::step]
+make_svg_points_plot(qq, "SNP marker GWAS QQ plot", "Expected -log10(p-value)", "Observed -log10(p-value)", prefix + "_qq.svg", draw_diag=True)
+
+with open(prefix + "_plot_summary.tsv", "w") as out:
+    out.write("metric\tvalue\n")
+    out.write("plot_label\tSNP marker GWAS\n")
+    out.write(f"pvalues_detected\t{len(rows)}\n")
+    out.write(f"significant_points_at_alpha\t{sum(1 for r in rows if r['p'] <= alpha)}\n")
+    out.write(f"points_drawn\t{len(draw_rows)}\n")
+    out.write("manhattan_type\treference_coordinate_when_available\n")
+    out.write("qq_plot\tgenerated\n")
+PY
+  >>>
+
+  output {
+    File snp_manhattan_plot_svg = "~{output_prefix}_manhattan.svg"
+    File snp_qq_plot_svg = "~{output_prefix}_qq.svg"
+    File snp_plot_summary = "~{output_prefix}_plot_summary.tsv"
+  }
+
+  runtime {
+    docker: python_docker
+    cpu: 1
+    memory: "4 GB"
+    disks: "local-disk 50 HDD"
+  }
+}
+
+
+task MAKE_SNP_GWAS_PLACEHOLDERS {
+  input {
+    String output_prefix
+    String python_docker
+  }
+
+  command <<<
+set -euo pipefail
+cat > ~{output_prefix}_pyseer_snp_assoc.tsv <<'EOF'
+variant	lrt-pvalue	beta	note
+EOF
+cat > ~{output_prefix}_top_snp_hits.tsv <<'EOF'
+rank	feature_id	variant_id	feature_type	contig	position	ref	alt	gene_name	product	case_alt	case_total	case_frequency	control_alt	control_total	control_frequency	enriched_in	odds_ratio	odds_ratio_ci95_lower	odds_ratio_ci95_upper	odds_ratio_ci95	beta	pyseer_pvalue	q_value	priority_score	annotation_source	notes
+EOF
+cp ~{output_prefix}_top_snp_hits.tsv ~{output_prefix}_all_significant_snp_hits.tsv
+cat > ~{output_prefix}_snp_summary.tsv <<'EOF'
+metric	value
+snp_gwas_status	not_run
+EOF
+cat > ~{output_prefix}.snps.vcf <<'EOF'
+##fileformat=VCFv4.2
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT
+EOF
+cat > ~{output_prefix}_manhattan.svg <<'EOF'
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="520" viewBox="0 0 980 520"><rect width="100%" height="100%" rx="18" fill="#071226"/><text x="490" y="260" fill="#9fb3c8" text-anchor="middle" font-family="Arial" font-size="22">SNP marker GWAS Manhattan plot not run</text></svg>
+EOF
+cat > ~{output_prefix}_qq.svg <<'EOF'
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="520" viewBox="0 0 980 520"><rect width="100%" height="100%" rx="18" fill="#071226"/><text x="490" y="260" fill="#9fb3c8" text-anchor="middle" font-family="Arial" font-size="22">SNP marker GWAS QQ plot not run</text></svg>
+EOF
+cat > ~{output_prefix}_plot_summary.tsv <<'EOF'
+metric	value
+pvalues_detected	0
+points_drawn	0
+snp_gwas_status	not_run
+EOF
+  >>>
+
+  output {
+    File pyseer_snp_assoc = "~{output_prefix}_pyseer_snp_assoc.tsv"
+    File snp_top_hits = "~{output_prefix}_top_snp_hits.tsv"
+    File snp_all_significant_hits = "~{output_prefix}_all_significant_snp_hits.tsv"
+    File snp_summary = "~{output_prefix}_snp_summary.tsv"
+    File snp_vcf = "~{output_prefix}.snps.vcf"
+    File snp_manhattan_plot_svg = "~{output_prefix}_manhattan.svg"
+    File snp_qq_plot_svg = "~{output_prefix}_qq.svg"
+    File snp_plot_summary = "~{output_prefix}_plot_summary.tsv"
+  }
+
+  runtime {
+    docker: python_docker
+    cpu: 1
+    memory: "1 GB"
+    disks: "local-disk 10 HDD"
+  }
+}
+
+task SNP_CALLING_SNIPPY {
+  input {
+    Array[String] sample_names
+    Array[File] read1s
+    Array[File] read2s
+    File reference_fasta
+    Float snp_min_qual
+    Int threads
+    Int memory_gb
+    Int disk_gb
+    String docker
+  }
+
+  command <<<
+set -euo pipefail
+export PATH=/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
+
+cp ~{reference_fasta} reference.fasta
+if [ ! -s reference.fasta ]; then
+  echo "ERROR: reference FASTA is required for SNP GWAS but is missing or empty." >&2
+  exit 1
+fi
+
+python <<'PY'
+names = """~{sep='\n' sample_names}""".strip().splitlines()
+r1s = """~{sep='\n' read1s}""".strip().splitlines()
+r2s = """~{sep='\n' read2s}""".strip().splitlines()
+if not (len(names) == len(r1s) == len(r2s)):
+    raise SystemExit("sample_names/read1s/read2s have unequal lengths for SNP calling")
+if len(names) != len(set(names)):
+    raise SystemExit("sample_names must be unique for SNP calling")
+with open("snp_sample_manifest.tsv", "w") as out:
+    out.write("sample\tread1\tread2\n")
+    for n, r1, r2 in zip(names, r1s, r2s):
+        out.write(f"{n}\t{r1}\t{r2}\n")
+PY
+
+{
+  echo "Starting reference-based SNP calling with Snippy"
+  echo "Samples: $(($(wc -l < snp_sample_manifest.tsv)-1))"
+  echo "Reference FASTA: reference.fasta"
+  echo "SNP QUAL filter: ~{snp_min_qual}"
+} > snp_calling.log
+
+for tool in snippy snippy-core; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "ERROR: required SNP calling tool not found in container: $tool" >&2
+    exit 1
+  fi
+done
+
+mkdir -p snippy_out
+tail -n +2 snp_sample_manifest.tsv | while IFS=$'\t' read -r sample r1 r2; do
+  echo "Snippy SNP calling for ${sample}" | tee -a snp_calling.log >&2
+  snippy \
+    --outdir "snippy_out/${sample}" \
+    --ref reference.fasta \
+    --R1 "$r1" \
+    --R2 "$r2" \
+    --cpus ~{threads} \
+    --ram ~{memory_gb} \
+    --force
+  if [ ! -s "snippy_out/${sample}/snps.vcf" ]; then
+    echo "ERROR: missing Snippy VCF for ${sample}" >&2
+    exit 1
+  fi
+done
+
+snippy-core --ref reference.fasta --prefix core snippy_out/* >> snp_calling.log 2>&1
+
+if [ ! -s core.vcf ]; then
+  echo "WARNING: snippy-core did not produce a non-empty core.vcf; creating an empty cohort VCF." >> snp_calling.log
+  python <<'PY'
+from pathlib import Path
+samples = []
+with open("snp_sample_manifest.tsv") as fh:
+    next(fh)
+    for line in fh:
+        if line.strip():
+            samples.append(line.split("\t", 1)[0])
+with open("core.vcf", "w") as out:
+    out.write("##fileformat=VCFv4.2\n")
+    out.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT")
+    if samples:
+        out.write("\t" + "\t".join(samples))
+    out.write("\n")
+Path("core.full.aln").write_text("")
+PY
+fi
+
+python <<'PY'
+from pathlib import Path
+import math
+qual_threshold = float("~{snp_min_qual}")
+in_path = Path("core.vcf")
+out_path = Path("rmap_gwas.snps.vcf")
+kept = 0
+total = 0
+with in_path.open(errors="replace") as inp, out_path.open("w") as out:
+    for line in inp:
+        if line.startswith("##"):
+            out.write(line)
+            continue
+        if line.startswith("#CHROM"):
+            out.write(line)
+            continue
+        if not line.strip():
+            continue
+        total += 1
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) < 8:
+            continue
+        chrom, pos, vid, ref, alt, qual = parts[:6]
+        if len(ref) != 1 or any(len(a) != 1 for a in alt.split(",")) or "," in alt:
+            continue
+        try:
+            q = float(qual) if qual not in (".", "", "NA") else math.inf
+        except Exception:
+            q = math.inf
+        if q < qual_threshold:
+            continue
+        parts[2] = f"{chrom}_{pos}_{ref}_{alt}"
+        out.write("\t".join(parts) + "\n")
+        kept += 1
+Path("snp_calling_summary.tsv").write_text(
+    "metric\tvalue\n"
+    "snp_calling_tool\tsnippy_snippy-core\n"
+    f"raw_core_vcf_records\t{total}\n"
+    f"snps_after_qual_filter\t{kept}\n"
+    f"qual_threshold\t{qual_threshold}\n"
+)
+PY
+
+if [ ! -e core.full.aln ]; then
+  touch core.full.aln
+fi
+
+cat snp_calling_summary.tsv >> snp_calling.log
+cat snp_calling.log >&2
+  >>>
+
+  output {
+    File snp_vcf = "rmap_gwas.snps.vcf"
+    File raw_core_vcf = "core.vcf"
+    File snippy_core_alignment = "core.full.aln"
+    File snp_calling_summary = "snp_calling_summary.tsv"
+    File snp_sample_manifest = "snp_sample_manifest.tsv"
+    File snp_calling_log = "snp_calling.log"
+  }
+
+  runtime {
+    docker: docker
+    cpu: threads
+    memory: "~{memory_gb} GB"
+    disks: "local-disk ~{disk_gb} HDD"
+  }
+}
+
+
+task PYSEER_SNP_GWAS {
+  input {
+    File phenotype_tsv
+    File snp_vcf
+    File mash_distances
+    Float min_af
+    Float max_af
+    Int max_dimensions
+    Boolean force_no_distances
+    Boolean no_distances_fallback
+    Int threads
+    Int memory_gb
+    Int disk_gb
+    String docker
+  }
+
+  command <<<
+set -euo pipefail
+export PATH=/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
+
+cp ~{snp_vcf} rmap_gwas.snps.vcf
+n_snps=$(grep -vc '^#' rmap_gwas.snps.vcf || true)
+{
+  echo "Starting pyseer SNP GWAS"
+  echo "Phenotypes: ~{phenotype_tsv}"
+  echo "SNP VCF: ~{snp_vcf}"
+  echo "Mash distance matrix: ~{mash_distances}"
+  echo "SNP markers detected: ${n_snps}"
+  echo "min_af: ~{min_af}"
+  echo "max_af: ~{max_af}"
+  echo "max_dimensions: ~{max_dimensions}"
+  echo "force_no_distances: ~{force_no_distances}"
+  echo "no_distances_fallback: ~{no_distances_fallback}"
+} > pyseer_snp_run.log
+
+if ! command -v pyseer >/dev/null 2>&1; then
+  echo "ERROR: pyseer is not available in the selected pyseer Docker image." >&2
+  exit 1
+fi
+
+if [ "$n_snps" -eq 0 ]; then
+  echo -e "variant\tlrt-pvalue\tbeta\tnote" > pyseer_snp_assoc.tsv
+  echo "No SNPs passed filters; wrote an empty pyseer SNP association table." >> pyseer_snp_run.log
+else
+  if [[ "~{force_no_distances}" == "true" ]]; then
+    pyseer --phenotypes ~{phenotype_tsv} --vcf rmap_gwas.snps.vcf --no-distances \
+      --min-af ~{min_af} --max-af ~{max_af} --cpu ~{threads} \
+      > pyseer_snp_assoc.tsv 2> pyseer_snp.stderr.log
+    cat pyseer_snp.stderr.log >&2
+  else
+    set +e
+    pyseer --phenotypes ~{phenotype_tsv} --vcf rmap_gwas.snps.vcf \
+      --distances ~{mash_distances} --max-dimensions ~{max_dimensions} \
+      --min-af ~{min_af} --max-af ~{max_af} --cpu ~{threads} \
+      > pyseer_snp_assoc.tsv 2> pyseer_snp.stderr.log
+    rc=$?
+    set -e
+    if [[ "$rc" -ne 0 && "~{no_distances_fallback}" == "true" ]]; then
+      echo "Primary SNP pyseer run failed with distances; retrying with --no-distances." >> pyseer_snp_run.log
+      set +e
+      pyseer --phenotypes ~{phenotype_tsv} --vcf rmap_gwas.snps.vcf --no-distances \
+        --min-af ~{min_af} --max-af ~{max_af} --cpu ~{threads} \
+        > pyseer_snp_assoc.tsv 2> pyseer_snp.no_distances.stderr.log
+      rc2=$?
+      set -e
+      cat pyseer_snp.no_distances.stderr.log >&2
+      if [[ "$rc2" -ne 0 ]]; then
+        echo "Fallback SNP pyseer run without distances also failed with exit code ${rc2}." >> pyseer_snp_run.log
+        exit "$rc2"
+      fi
+    elif [[ "$rc" -ne 0 ]]; then
+      cat pyseer_snp.stderr.log >&2
+      exit "$rc"
+    else
+      cat pyseer_snp.stderr.log >&2
+    fi
+  fi
+fi
+
+if [ ! -s pyseer_snp_assoc.tsv ]; then
+  echo "ERROR: pyseer_snp_assoc.tsv was not created or is empty." >&2
+  cat pyseer_snp_run.log >&2
+  exit 1
+fi
+
+{
+  echo -e "metric\tvalue"
+  echo -e "snp_gwas_status\trun"
+  echo -e "snps_after_qual_filter\t${n_snps}"
+  echo -e "pyseer_rows\t$(($(wc -l < pyseer_snp_assoc.tsv)-1))"
+} > snp_gwas_summary.tsv
+
+cat snp_gwas_summary.tsv >> pyseer_snp_run.log
+cat pyseer_snp_run.log >&2
+  >>>
+
+  output {
+    File pyseer_snp_assoc = "pyseer_snp_assoc.tsv"
+    File snp_gwas_summary = "snp_gwas_summary.tsv"
+    File pyseer_snp_run_log = "pyseer_snp_run.log"
+  }
+
+  runtime {
+    docker: docker
+    cpu: threads
+    memory: "~{memory_gb} GB"
+    disks: "local-disk ~{disk_gb} HDD"
+  }
+}
+
+
+task PRIORITIZE_SNP_GWAS_HITS {
+  input {
+    File phenotype_tsv
+    File pyseer_snp_assoc
+    File snp_vcf
+    File reference_genbank
+    Float significance_alpha
+    String output_prefix
+    String python_docker
+  }
+
+  command <<<
+set -euo pipefail
+export PATH=/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
+python <<'PY'
+from pathlib import Path
+import csv, re, math
+
+phenotypes = {}
+with open("~{phenotype_tsv}") as fh:
+    header = fh.readline().rstrip("\n").split("\t")
+    for line in fh:
+        if line.strip():
+            sample, val = line.rstrip("\n").split("\t")[:2]
+            phenotypes[sample] = int(float(val))
+cases = {s for s,v in phenotypes.items() if v == 1}
+controls = {s for s,v in phenotypes.items() if v == 0}
+alpha = float("~{significance_alpha}")
+prefix = "~{output_prefix}"
+
+def parse_float(x):
+    try:
+        if x in (None, "", "NA", "nan", "None"):
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+def pick(row, names):
+    lower = {k.lower(): k for k in row}
+    for n in names:
+        if n in row:
+            return row[n]
+        if n.lower() in lower:
+            return row[lower[n.lower()]]
+    return ""
+
+def parse_genbank_cds(path):
+    txt = Path(path).read_text(errors="replace") if Path(path).exists() else ""
+    m = re.search(r"\nFEATURES\s+Location/Qualifiers\s*(.*?)(?=\nORIGIN)", txt, flags=re.S)
+    lines = m.group(1).splitlines() if m else []
+    cds = []
+    cur = None
+    key = None
+    for line in lines:
+        if re.match(r"^     \S+", line):
+            fkey = line[5:21].strip()
+            loc = line[21:].strip()
+            if fkey == "CDS":
+                cur = {"location": loc, "qualifiers": {}}
+                cds.append(cur)
+            else:
+                cur = None
+            key = None
+            continue
+        if cur is None:
+            continue
+        st = line.strip()
+        qm = re.match(r"/([^=]+)=(.*)", st)
+        if qm:
+            key = qm.group(1)
+            val = qm.group(2).strip().strip('"')
+            cur["qualifiers"].setdefault(key, "")
+            cur["qualifiers"][key] += val
+        elif key:
+            cur["qualifiers"][key] += st.strip().strip('"')
+    out = []
+    for c in cds:
+        ranges = []
+        for a,b,single in re.findall(r"<?(\d+)\.\.>?(\d+)|<?(\d+)", c.get("location","")):
+            if single:
+                ranges.append((int(single), int(single)))
+            else:
+                ranges.append((int(a), int(b)))
+        q = c.get("qualifiers", {})
+        out.append({"ranges": ranges, "locus_tag": q.get("locus_tag",""), "gene": q.get("gene",""), "product": q.get("product",""), "location": c.get("location","")})
+    return out
+
+cds = parse_genbank_cds("~{reference_genbank}")
+def annotate(pos):
+    try:
+        p = int(pos)
+    except Exception:
+        return {"locus_tag":"", "gene":"", "product":"", "location":""}
+    for c in cds:
+        if any(a <= p <= b for a,b in c["ranges"]):
+            return c
+    return {"locus_tag":"", "gene":"", "product":"intergenic_or_unannotated", "location":""}
+
+vcf_records = {}
+samples = []
+with open("~{snp_vcf}", errors="replace") as fh:
+    for line in fh:
+        if line.startswith("#CHROM"):
+            parts = line.rstrip("\n").split("\t")
+            samples = parts[9:]
+            continue
+        if line.startswith("#") or not line.strip():
+            continue
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) < 8:
+            continue
+        chrom, pos, vid, ref, alt, qual = parts[:6]
+        genos = parts[9:]
+        alt_samples = set()
+        for s,g in zip(samples, genos):
+            gt = g.split(":",1)[0]
+            if any(a not in ("0",".","") for a in re.split(r"[|/]", gt)):
+                alt_samples.add(s)
+        vid2 = vid if vid not in ("", ".") else f"{chrom}_{pos}_{ref}_{alt}"
+        rec = {"variant_id": vid2, "chrom": chrom, "pos": pos, "ref": ref, "alt": alt, "qual": qual, "alt_samples": alt_samples}
+        for k in {vid2, f"{chrom}_{pos}", f"{chrom}:{pos}", f"{chrom}_{pos}_{ref}_{alt}", f"{pos}", f"{pos}_{ref}_{alt}"}:
+            vcf_records[k] = rec
+
+assoc_rows = []
+with open("~{pyseer_snp_assoc}", errors="replace") as fh:
+    first = fh.readline().rstrip("\n")
+    header = re.split(r"\t|\s+", first.strip()) if first else []
+    for line in fh:
+        if not line.strip() or line.startswith("#"):
+            continue
+        parts = re.split(r"\t|\s+", line.strip())
+        if len(parts) < len(header):
+            parts += [""] * (len(header) - len(parts))
+        assoc_rows.append(dict(zip(header, parts)))
+
+rows = []
+for row in assoc_rows:
+    feature = pick(row, ["variant","feature","name"]) or next(iter(row.values()), "")
+    rec = vcf_records.get(feature)
+    if rec is None:
+        for n in re.findall(r"\d+", feature):
+            if n in vcf_records:
+                rec = vcf_records[n]
+                break
+    if rec is None:
+        rec = {"variant_id": feature, "chrom":"", "pos":"", "ref":"", "alt":"", "qual":"", "alt_samples": set()}
+    pval = parse_float(pick(row, ["lrt-pvalue","lrt_pvalue","pvalue","p-value","filter-pvalue","p"]))
+    qval = parse_float(pick(row, ["q_value","q-value","qvalue","adjusted-pvalue","adjusted_pvalue"]))
+    beta = parse_float(pick(row, ["beta","effect","coef","coefficient"]))
+    alt_samples = rec["alt_samples"]
+    ca, co = len(alt_samples & cases), len(alt_samples & controls)
+    ct, cot = len(cases), len(controls)
+    cf, cof = (ca/ct if ct else 0.0), (co/cot if cot else 0.0)
+    if beta is None:
+        beta = cf - cof
+    enriched = "Cases" if cf > cof and beta >= 0 else "Controls" if cof > cf and beta <= 0 else "Check manually"
+    a,b,c,d = ca+0.5, (ct-ca)+0.5, co+0.5, (cot-co)+0.5
+    orv = (a/b)/(c/d)
+    se = math.sqrt(1/a + 1/b + 1/c + 1/d)
+    lo, hi = math.exp(math.log(orv)-1.96*se), math.exp(math.log(orv)+1.96*se)
+    stat = qval if qval is not None else pval
+    score = -math.log10(stat) if stat and stat > 0 else 0.0
+    ann = annotate(rec.get("pos",""))
+    rows.append({
+        "feature_id": rec["variant_id"], "variant_id": rec["variant_id"], "feature_type": "snp",
+        "contig": rec["chrom"], "position": rec["pos"], "ref": rec["ref"], "alt": rec["alt"], "qual": rec["qual"],
+        "gene_name": ann.get("gene") or ann.get("locus_tag") or rec["variant_id"],
+        "product": ann.get("product",""), "reference_locus_tag": ann.get("locus_tag",""), "reference_gene": ann.get("gene",""),
+        "reference_product": ann.get("product",""), "reference_location": ann.get("location",""),
+        "case_alt": ca, "case_total": ct, "case_frequency": f"{cf:.4f}",
+        "control_alt": co, "control_total": cot, "control_frequency": f"{cof:.4f}",
+        "enriched_in": enriched, "beta": f"{beta:.6g}", "odds_ratio": f"{orv:.6g}",
+        "odds_ratio_ci95_lower": f"{lo:.6g}", "odds_ratio_ci95_upper": f"{hi:.6g}", "odds_ratio_ci95": f"{lo:.4g}-{hi:.4g}",
+        "pyseer_pvalue": "" if pval is None else f"{pval:.6g}", "q_value": "" if qval is None else f"{qval:.6g}",
+        "priority_score": f"{score:.4f}", "annotation_source": "reference_GenBank_coordinate_overlap",
+        "notes": "SNP-level association; inspect population structure before causal interpretation."
+    })
+
+rows.sort(key=lambda x: float(x["priority_score"]), reverse=True)
+sig = [r for r in rows if (parse_float(r["q_value"]) is not None and parse_float(r["q_value"]) <= alpha) or (not r["q_value"] and parse_float(r["pyseer_pvalue"]) is not None and parse_float(r["pyseer_pvalue"]) <= alpha)]
+
+fields = ["rank","feature_id","variant_id","feature_type","contig","position","ref","alt","qual","gene_name","product","reference_locus_tag","reference_gene","reference_product","reference_location","case_alt","case_total","case_frequency","control_alt","control_total","control_frequency","enriched_in","beta","odds_ratio","odds_ratio_ci95_lower","odds_ratio_ci95_upper","odds_ratio_ci95","pyseer_pvalue","q_value","priority_score","annotation_source","notes"]
+def write_table(path, data):
+    with open(path, "w", newline="") as out:
+        w = csv.DictWriter(out, fieldnames=fields, delimiter="\t")
+        w.writeheader()
+        for i,r in enumerate(data, 1):
+            rr = {"rank": i}
+            rr.update(r)
+            w.writerow(rr)
+write_table(prefix + "_all_ranked_snp_hits.tsv", rows)
+write_table(prefix + "_top_snp_hits.tsv", sig[:100])
+write_table(prefix + "_all_significant_snp_hits.tsv", sig)
+with open(prefix + "_snp_summary.tsv", "w") as out:
+    out.write("metric\tvalue\n")
+    out.write("snp_gwas_status\tprioritized\n")
+    out.write(f"pyseer_snp_rows\t{len(assoc_rows)}\n")
+    out.write(f"ranked_snp_features\t{len(rows)}\n")
+    out.write(f"significant_snp_features\t{len(sig)}\n")
+    out.write(f"alpha\t{alpha}\n")
+PY
+  >>>
+
+  output {
+    File snp_all_ranked_hits = "~{output_prefix}_all_ranked_snp_hits.tsv"
+    File snp_top_hits = "~{output_prefix}_top_snp_hits.tsv"
+    File snp_all_significant_hits = "~{output_prefix}_all_significant_snp_hits.tsv"
+    File snp_summary = "~{output_prefix}_snp_summary.tsv"
+  }
+
+  runtime {
+    docker: python_docker
+    cpu: 1
+    memory: "8 GB"
+    disks: "local-disk 100 HDD"
+  }
+}
+
+task GENERATE_POPULATION_STRUCTURE_PLOTS {
+  input {
+    File phenotype_tsv
+    File mash_distances
+    String output_prefix
+    String python_docker
+  }
+
+  command <<<
+set -euo pipefail
+export PATH=/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
+python <<'PY'
+from pathlib import Path
+import csv, html
+import numpy as np
+
+prefix = "~{output_prefix}"
+phenotypes = {}
+with open("~{phenotype_tsv}") as fh:
+    hdr = fh.readline().rstrip("\n").split("\t")
+    phenotype_name = hdr[1] if len(hdr) > 1 else "phenotype"
+    for line in fh:
+        if line.strip():
+            s,v = line.rstrip("\n").split("\t")[:2]
+            phenotypes[s] = int(float(v))
+with open("~{mash_distances}") as fh:
+    r = csv.reader(fh, delimiter="\t")
+    hdr = next(r)
+    names = []
+    vals = []
+    for row in r:
+        names.append(row[0])
+        vals.append([float(x) for x in row[1:]])
+D = np.array(vals, dtype=float)
+if D.size:
+    n = D.shape[0]
+    J = np.eye(n) - np.ones((n,n))/n
+    B = -0.5 * J.dot(D**2).dot(J)
+    eigvals, eigvecs = np.linalg.eigh(B)
+    idx = np.argsort(eigvals)[::-1]
+    eigvals, eigvecs = eigvals[idx], eigvecs[:,idx]
+    pos = np.maximum(eigvals[:2], 0)
+    coords = eigvecs[:,:2] * np.sqrt(pos)
+    denom = float(np.sum(np.maximum(eigvals, 0))) or 1.0
+    var1 = 100*pos[0]/denom if len(pos) else 0.0
+    var2 = 100*pos[1]/denom if len(pos) > 1 else 0.0
+else:
+    coords = np.zeros((0,2)); var1 = var2 = 0.0
+
+def esc(x): return html.escape(str(x), quote=True)
+w,h,ml,mt,pw,ph = 980,520,74,58,760,380
+xs = coords[:,0] if len(coords) else np.array([0,1])
+ys = coords[:,1] if len(coords) else np.array([0,1])
+xmin,xmax = float(xs.min()), float(xs.max())
+ymin,ymax = float(ys.min()), float(ys.max())
+if xmax == xmin: xmax += 1
+if ymax == ymin: ymax += 1
+def sx(x): return ml + (float(x)-xmin)/(xmax-xmin)*pw
+def sy(y): return mt + ph - (float(y)-ymin)/(ymax-ymin)*ph
+parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">','<rect width="100%" height="100%" rx="18" fill="#071226"/>','<text x="74" y="34" fill="#eef6ff" font-family="Arial" font-size="22" font-weight="700">Population structure: Mash PCoA</text>']
+parts.append(f'<line x1="{ml}" y1="{mt+ph}" x2="{ml+pw}" y2="{mt+ph}" stroke="#8ecaff"/>')
+parts.append(f'<line x1="{ml}" y1="{mt}" x2="{ml}" y2="{mt+ph}" stroke="#8ecaff"/>')
+for i,name in enumerate(names):
+    val = phenotypes.get(name, 0)
+    color = '#ff7ab6' if val == 1 else '#21d4fd'
+    label = 'case' if val == 1 else 'control'
+    parts.append(f'<circle cx="{sx(coords[i,0]):.1f}" cy="{sy(coords[i,1]):.1f}" r="5" fill="{color}" opacity="0.80"><title>{esc(name)} ({label})</title></circle>')
+parts.append(f'<text x="{w/2}" y="{h-18}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle">PCoA1 ({var1:.1f}% variance)</text>')
+parts.append(f'<text x="20" y="{h/2}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle" transform="rotate(-90 20 {h/2})">PCoA2 ({var2:.1f}% variance)</text>')
+parts.append('</svg>')
+Path(prefix + "_population_pca.svg").write_text("\n".join(parts))
+
+order = sorted(range(len(names)), key=lambda i: (phenotypes.get(names[i],0), names[i]))
+maxd = float(np.max(D)) if D.size else 1.0
+if maxd <= 0: maxd = 1.0
+cell = max(5, min(22, int(760/max(1,len(order)))))
+left,top = 150,70
+hw,hh = left + cell*max(1,len(order)) + 60, top + cell*max(1,len(order)) + 80
+hp = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{hw}" height="{hh}" viewBox="0 0 {hw} {hh}">','<rect width="100%" height="100%" rx="18" fill="#071226"/>','<text x="40" y="34" fill="#eef6ff" font-family="Arial" font-size="22" font-weight="700">Mash distance / kinship matrix</text>']
+for yi,i in enumerate(order):
+    for xj,j in enumerate(order):
+        sim = 1.0 - (float(D[i,j])/maxd) if D.size else 0.0
+        fill = '#ff7ab6' if phenotypes.get(names[i],0) == phenotypes.get(names[j],0) else '#21d4fd'
+        op = 0.18 + 0.75*max(0,min(1,sim))
+        hp.append(f'<rect x="{left+xj*cell}" y="{top+yi*cell}" width="{cell}" height="{cell}" fill="{fill}" opacity="{op:.2f}"/>')
+hp.append('</svg>')
+Path(prefix + "_kinship_heatmap.svg").write_text("\n".join(hp))
+with open(prefix + "_population_structure_summary.tsv", "w") as out:
+    out.write("metric\tvalue\n")
+    out.write(f"phenotype\t{phenotype_name}\n")
+    out.write(f"samples\t{len(names)}\n")
+    out.write(f"pcoa1_variance_percent\t{var1:.4f}\n")
+    out.write(f"pcoa2_variance_percent\t{var2:.4f}\n")
+    out.write("method\tPCoA from square Mash distance matrix plus distance heatmap\n")
+PY
+  >>>
+
+  output {
+    File pca_svg = "~{output_prefix}_population_pca.svg"
+    File kinship_heatmap_svg = "~{output_prefix}_kinship_heatmap.svg"
+    File population_structure_summary = "~{output_prefix}_population_structure_summary.tsv"
+  }
+
+  runtime {
+    docker: python_docker
+    cpu: 1
+    memory: "4 GB"
+    disks: "local-disk 50 HDD"
+  }
+}
+
+
 task MERGE_RMAP_GWAS_REPORT {
   input {
     String output_prefix
@@ -1815,6 +2838,20 @@ task MERGE_RMAP_GWAS_REPORT {
     File pyseer_gene_assoc
     File panaroo_summary
     File mash_distances
+    File population_pca_svg
+    File kinship_heatmap_svg
+    File population_structure_summary
+    Boolean do_snp_gwas
+    String gwas_mode
+    String container_backend
+    File snp_top_hits
+    File snp_all_significant_hits
+    File snp_summary
+    File pyseer_snp_assoc
+    File snp_vcf
+    File snp_qq_plot_svg
+    File snp_manhattan_plot_svg
+    File snp_plot_summary
     String reference_docker
     String reference_species
     String reference_name
@@ -1832,6 +2869,9 @@ prefix = "~{output_prefix}"
 reference_docker = "~{reference_docker}"
 reference_species = "~{reference_species}"
 reference_name = "~{reference_name}"
+do_snp_gwas = "~{do_snp_gwas}".strip().lower() == "true"
+gwas_mode = "~{gwas_mode}"
+container_backend = "~{container_backend}"
 TOP_CARD_COUNT = 5
 
 
@@ -1930,11 +2970,11 @@ def confidence_badge_class(conf):
 
 def preferred_order(header):
     preferred = [
-        "rank", "feature_id", "display_name", "display_label", "gene_name", "product",
+        "rank", "feature_id", "variant_id", "feature_type", "display_name", "display_label", "contig", "position", "ref", "alt", "gene_name", "product",
         "reference_locus_tag", "reference_gene", "reference_product", "annotation_confidence",
         "reference_identity", "reference_coverage", "interpretation_note", "annotation_evidence",
-        "case_present", "case_total", "case_frequency", "control_present", "control_total", "control_frequency",
-        "enriched_in", "odds_ratio", "pyseer_pvalue", "q_value", "priority_score",
+        "case_present", "case_alt", "case_total", "case_frequency", "control_present", "control_alt", "control_total", "control_frequency",
+        "enriched_in", "beta", "odds_ratio", "odds_ratio_ci95", "odds_ratio_ci95_lower", "odds_ratio_ci95_upper", "pyseer_pvalue", "q_value", "priority_score",
         "feature_type", "annotation_source", "reference_match_type", "reference_location", "annotation_note", "cluster_member_ids"
     ]
     seen = set()
@@ -2064,9 +3104,21 @@ validation_txt = read_text("~{validation_report}")
 panaroo_txt = read_text("~{panaroo_summary}")
 annotation_summary_txt = read_text("~{reference_annotation_summary}")
 plot_summary_txt = read_text("~{plot_summary}")
+population_structure_summary_txt = read_text("~{population_structure_summary}")
+population_pca_svg = read_svg("~{population_pca_svg}")
+kinship_heatmap_svg = read_svg("~{kinship_heatmap_svg}")
 pyseer_n = tsv_count("~{pyseer_gene_assoc}")
+snp_pyseer_n = tsv_count("~{pyseer_snp_assoc}")
 qq_svg = read_svg("~{qq_plot_svg}")
 manhattan_svg = read_svg("~{manhattan_plot_svg}")
+snp_qq_svg = read_svg("~{snp_qq_plot_svg}")
+snp_manhattan_svg = read_svg("~{snp_manhattan_plot_svg}")
+snp_summary_txt = read_text("~{snp_summary}")
+snp_plot_summary_txt = read_text("~{snp_plot_summary}")
+snp_header, snp_top_rows = read_tsv_dicts("~{snp_top_hits}")
+snp_status = "enabled" if do_snp_gwas else "not run"
+phenotype_tested = phenotype_rows[0][1] if phenotype_rows and len(phenotype_rows[0]) > 1 else "case_control"
+snp_section = f"""<div class=\"card\" id=\"snp\"><h2><span>05</span> SNP-based GWAS branch</h2><div class=\"callout\"><strong>Status:</strong> SNP GWAS is {safe_text(snp_status)}. This branch performs reference mapping, SNP calling, pyseer SNP association testing, coordinate-level GenBank annotation, odds ratios, and 95% confidence intervals for binary outcomes. The plots below are generated for SNP markers when SNP-GWAS is enabled; points reaching the significance threshold are highlighted. This is especially important for mutation-mediated phenotypes such as MTBC drug resistance.</div><div class=\"plot-grid\"><div class=\"plot\">{snp_manhattan_svg}</div><div class=\"plot\">{snp_qq_svg}</div></div><h3>Top SNP hits</h3>{table_from_tsv('~{snp_top_hits}', max_rows=100, reorder=True)}<h3>All significant SNP hits</h3>{table_from_tsv('~{snp_all_significant_hits}', max_rows=100, reorder=True)}<h3>SNP GWAS summary</h3><pre>{safe_text(snp_summary_txt)}</pre><h3>SNP plot summary</h3><pre>{safe_text(snp_plot_summary_txt)}</pre></div>"""
 generated = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
 small_sample_note = ""
@@ -2092,12 +3144,14 @@ body:before {{ content: \"\"; position: fixed; inset: 0; pointer-events: none; b
 .top-grid {{ display: grid; grid-template-columns: repeat(5, minmax(180px, 1fr)); gap: 14px; margin-bottom: 12px; }} @media (max-width: 1180px) {{ .top-grid {{ grid-template-columns: repeat(2, 1fr); }} }} @media (max-width: 720px) {{ .top-grid {{ grid-template-columns: 1fr; }} }} .top-card {{ border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.055); border-radius: 18px; padding: 16px; }} .top-rank {{ color: var(--green); font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: .08em; }} .top-name {{ font-size: 20px; font-weight: 900; line-height: 1.05; margin: 8px 0; word-break: break-word; }} .top-label, .top-stats {{ color: var(--muted); font-size: 12px; line-height: 1.35; }} .top-card p {{ color: #dbeafe; font-size: 13px; line-height: 1.35; }}
 .conf {{ display: inline-block; padding: 5px 9px; border-radius: 999px; font-weight: 900; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }} .conf-high {{ background: rgba(85,239,196,.16); color: #b7fff0; border: 1px solid rgba(85,239,196,.45); }} .conf-medium {{ background: rgba(255,209,102,.16); color: #fff0b8; border: 1px solid rgba(255,209,102,.45); }} .conf-low {{ background: rgba(255,122,182,.16); color: #ffd0e7; border: 1px solid rgba(255,122,182,.45); }} .conf-none {{ background: rgba(148,163,184,.16); color: #dbeafe; border: 1px solid rgba(148,163,184,.35); }}
 .plot-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }} @media (max-width: 1000px) {{ .plot-grid {{ grid-template-columns: 1fr; }} }} .plot svg {{ width: 100%; height: auto; border-radius: 18px; border: 1px solid rgba(148,163,184,.18); }} .empty, .note {{ color: var(--muted); }} .footer {{ margin-top: 26px; color: var(--muted); text-align: center; font-size: 13px; }}
-</style></head><body><div class=\"page\"><section class=\"hero\"><div class=\"hero-grid\"><div><div class=\"kicker\">Cromwell workflow report</div><h1><span class=\"gradient-text\">rMAP-GWAS</span></h1><p class=\"subtitle\">Reproducible microbial gene presence and absence GWAS from paired-end reads, assemblies, annotation, pangenome construction, population-structure correction, post-GWAS reference annotation, and ranked association reporting.</p><div class=\"badges\"><span class=\"badge\">Cromwell</span><span class=\"badge\">Dockerized</span><span class=\"badge\">Distance-corrected pyseer</span><span class=\"badge\">Multi-pathogen ready</span><span class=\"badge\">GenBank annotation rescue</span></div><nav class=\"nav\"><a href=\"#pipeline\">Pipeline</a><a href=\"#plots\">Plots</a><a href=\"#hits\">Priority hits</a><a href=\"#annotation\">Reference annotation</a><a href=\"#validation\">Validation</a><a href=\"#outputs\">Outputs</a></nav>{small_sample_note}</div><div class=\"metrics\"><div class=\"metric\"><div class=\"label\">Cases</div><div class=\"num\">{cases}</div></div><div class=\"metric\"><div class=\"label\">Controls</div><div class=\"num\">{controls}</div></div><div class=\"metric\"><div class=\"label\">Total samples</div><div class=\"num\">{total}</div></div><div class=\"metric\"><div class=\"label\">Top hit</div><div class=\"num smalltop\">{safe_text(display_name)}</div><div class=\"sub\">{safe_text(display_subtitle)}</div></div></div></div></section><section class=\"grid\">
+</style></head><body><div class=\"page\"><section class=\"hero\"><div class=\"hero-grid\"><div><div class=\"kicker\">Cromwell workflow report</div><h1><span class=\"gradient-text\">rMAP-GWAS</span></h1><p class=\"subtitle\">Reproducible microbial GWAS from paired-end reads, including gene presence/absence GWAS, optional SNP GWAS, population-structure visualization, post-GWAS reference annotation, and ranked association reporting.</p><div class=\"badges\"><span class=\"badge\">Cromwell</span><span class=\"badge\">Dockerized</span><span class=\"badge\">Distance-corrected pyseer</span><span class=\"badge\">Multi-pathogen ready</span><span class=\"badge\">GenBank annotation rescue</span><span class=\"badge\">Optional SNP GWAS</span></div><nav class=\"nav\"><a href=\"#pipeline\">Pipeline</a><a href=\"#structure\">Population structure</a><a href=\"#plots\">Gene plots</a><a href=\"#snp\">SNP GWAS</a><a href=\"#hits\">Priority hits</a><a href=\"#annotation\">Reference annotation</a><a href=\"#validation\">Validation</a><a href=\"#outputs\">Outputs</a></nav>{small_sample_note}</div><div class=\"metrics\"><div class=\"metric\"><div class=\"label\">Cases</div><div class=\"num\">{cases}</div></div><div class=\"metric\"><div class=\"label\">Controls</div><div class=\"num\">{controls}</div></div><div class=\"metric\"><div class=\"label\">Total samples</div><div class=\"num\">{total}</div></div><div class=\"metric\"><div class=\"label\">Top hit</div><div class=\"num smalltop\">{safe_text(display_name)}</div><div class=\"sub\">{safe_text(display_subtitle)}</div></div></div></div></section><section class=\"grid\">
 <div class=\"card\" id=\"pipeline\"><h2><span>01</span> Workflow architecture</h2><div class=\"pipeline\"><div class=\"step\"><div class=\"icon\">01</div><div class=\"idx\">Input</div><div class=\"title\">Sample-set validation</div><p>Checks sample names, paired FASTQs, group labels, and case/control balance.</p></div><div class=\"step\"><div class=\"icon\">02</div><div class=\"idx\">QC</div><div class=\"title\">fastp trimming</div><p>Generates cleaned reads plus QC summaries.</p></div><div class=\"step\"><div class=\"icon\">03</div><div class=\"idx\">Assembly</div><div class=\"title\">Shovill</div><p>Builds de novo genome assemblies using safe Cromwell memory handling.</p></div><div class=\"step\"><div class=\"icon\">04</div><div class=\"idx\">Annotation</div><div class=\"title\">Prokka + Panaroo</div><p>Creates GFF annotations and pangenome gene matrices.</p></div><div class=\"step\"><div class=\"icon\">05</div><div class=\"idx\">GWAS</div><div class=\"title\">Mash + pyseer</div><p>Runs population-structure-aware gene association testing.</p></div><div class=\"step\"><div class=\"icon\">06</div><div class=\"idx\">Rescue</div><div class=\"title\">GenBank annotation</div><p>Maps prioritized Panaroo clusters to reference GenBank CDS features where possible.</p></div></div></div>
-<div class=\"card half\"><h2><span>02</span> Run configuration</h2><div class=\"hit-card\"><div class=\"hit-box\"><div class=\"small\">Reference name</div><div class=\"big\">{safe_text(reference_name)}</div></div><div class=\"hit-box\"><div class=\"small\">Species</div><div class=\"big\">{safe_text(reference_species)}</div></div><div class=\"hit-box\"><div class=\"small\">Reference Docker</div><div class=\"big\">{safe_text(reference_docker)}</div></div><div class=\"hit-box\"><div class=\"small\">Generated UTC</div><div class=\"big\">{safe_text(generated)}</div></div></div></div>
+<div class=\"card half\"><h2><span>02</span> Run configuration</h2><div class=\"hit-card\"><div class=\"hit-box\"><div class=\"small\">Reference name</div><div class=\"big\">{safe_text(reference_name)}</div></div><div class=\"hit-box\"><div class=\"small\">Species</div><div class=\"big\">{safe_text(reference_species)}</div></div><div class=\"hit-box\"><div class=\"small\">Reference Docker</div><div class=\"big\">{safe_text(reference_docker)}</div></div><div class=\"hit-box\"><div class=\"small\">Generated UTC</div><div class=\"big\">{safe_text(generated)}</div></div></div><div class=\"callout\"><strong>Phenotype tested:</strong> Binary phenotype <code>{safe_text(phenotype_tested)}</code>, coded as cases=1 and controls=0. GWAS mode: {safe_text(gwas_mode)}; SNP branch: {safe_text(snp_status)}; container backend recorded as {safe_text(container_backend)}.</div></div>
 <div class=\"card half\"><h2><span>03</span> Top-hit GenBank annotation rescue</h2><div class=\"hit-card\"><div class=\"hit-box\"><div class=\"small\">Display name</div><div class=\"big\">{safe_text(display_name)}</div></div><div class=\"hit-box\"><div class=\"small\">Panaroo cluster</div><div class=\"big\">{safe_text(feature_id)}</div></div><div class=\"hit-box\"><div class=\"small\">Reference locus / gene</div><div class=\"big\">{safe_text((reference_locus_tag or 'not matched') + ' / ' + (reference_gene or 'not assigned'))}</div></div><div class=\"hit-box\"><div class=\"small\">Confidence</div><div class=\"big\"><span class=\"conf {confidence_badge_class(annotation_confidence)}\">{safe_text(annotation_confidence or 'none')}</span></div></div></div><div class=\"callout\"><strong>Top-hit interpretation:</strong> {safe_text(interpretation_note)} Reference identity: {safe_text(reference_identity or 'NA')}%; reference coverage: {safe_text(reference_coverage or 'NA')}%. Product: {safe_text(reference_product or product or 'not assigned')}.</div></div>
-<div class=\"card\" id=\"plots\"><h2><span>04</span> GWAS plots</h2><div class=\"callout\"><strong>Plot note:</strong> The association plot is a feature-index GWAS plot, not a full reference-coordinate Manhattan plot. A coordinate-level Manhattan plot requires robust mapping of each Panaroo cluster to a reference genomic coordinate.</div><div class=\"plot-grid\"><div class=\"plot\">{manhattan_svg}</div><div class=\"plot\">{qq_svg}</div></div><pre>{safe_text(plot_summary_txt)}</pre></div>
-<div class=\"card\" id=\"hits\"><h2><span>05</span> Top priority GWAS hits</h2>{top_cards(top_rows, TOP_CARD_COUNT)}<h3>Prioritized hit table</h3>{table_from_tsv('~{top_priority_hits}', max_rows=100, reorder=True)}</div>
+<div class=\"card\" id=\"structure\"><h2><span>04</span> Population structure</h2><div class=\"callout\"><strong>Interpretation check:</strong> Review case/control clustering before interpreting top hits. Strong phenotype-lineage clustering can indicate lineage-associated markers rather than causal phenotype-associated variation.</div><div class=\"plot-grid\"><div class=\"plot\">{population_pca_svg}</div><div class=\"plot\">{kinship_heatmap_svg}</div></div><pre>{safe_text(population_structure_summary_txt)}</pre></div>
+<div class=\"card\" id=\"plots\"><h2><span>05</span> Gene presence/absence GWAS plots</h2><div class=\"callout\"><strong>Plot note:</strong> The gene association plot is a feature-index GWAS plot, not a full reference-coordinate Manhattan plot. A coordinate-level Manhattan plot requires robust mapping of each Panaroo cluster to a reference genomic coordinate.</div><div class=\"plot-grid\"><div class=\"plot\">{manhattan_svg}</div><div class=\"plot\">{qq_svg}</div></div><pre>{safe_text(plot_summary_txt)}</pre></div>
+{snp_section}
+<div class=\"card\" id=\"hits\"><h2><span>06</span> Top priority gene presence/absence GWAS hits</h2>{top_cards(top_rows, TOP_CARD_COUNT)}<h3>Prioritized hit table</h3>{table_from_tsv('~{top_priority_hits}', max_rows=100, reorder=True)}</div>
 <div class=\"card\" id=\"allhits\"><h2><span>06</span> All significant hits</h2>{table_from_tsv('~{all_significant_hits}', max_rows=100, reorder=True)}</div>
 <div class=\"card\" id=\"annotation\"><h2><span>07</span> Reference annotation confidence guide</h2><div class=\"callout\"><strong>Annotation caveat:</strong> Reference annotation rescue is intended to improve interpretability of Panaroo clusters. Low-confidence matches should not be treated as definitive gene calls. Panaroo group IDs such as group_2271 are pangenome feature identifiers, not stable biological gene names, and may change across runs depending on input samples and clustering. For MTBC, PE/PPE and PE-PGRS regions can be repetitive, assembly-sensitive, and difficult to annotate from short-read assemblies.</div>{confidence_table_html()}<h3>Reference annotation summary</h3><pre>{safe_text(annotation_summary_txt)}</pre></div>
 <div class=\"card half\" id=\"validation\"><h2><span>08</span> Input validation</h2><pre>{safe_text(validation_txt)}</pre></div><div class=\"card half\" id=\"panaroo\"><h2><span>09</span> Panaroo summary</h2><pre>{safe_text(panaroo_txt)}</pre></div><div class=\"card half\" id=\"interpretation\"><h2><span>10</span> Interpretation guidance</h2><div class=\"callout\">Microbial GWAS can be confounded by lineage structure, outbreak clustering, recombination, phenotype misclassification, and small sample size. Reference annotation rescue improves interpretability but does not validate causality. Candidate hits should be validated in larger, independent datasets and interpreted with biological plausibility and epidemiological context.</div></div>
@@ -2107,8 +3161,11 @@ body:before {{ content: \"\"; position: fixed; inset: 0; pointer-events: none; b
 Path(prefix + "_report.html").write_text(html_doc)
 provenance = {
     "workflow": "rMAP-GWAS",
-    "workflow_version": "0.2.1",
-    "description": "Gene presence/absence microbial GWAS from paired-end reads with post-GWAS GenBank annotation rescue, confidence labeling, and SVG plots.",
+    "workflow_version": "0.3.0-snp-gwas",
+    "description": "Modular microbial GWAS from paired-end reads with gene presence/absence GWAS, optional reference-based SNP GWAS, population-structure plots, GenBank annotation rescue, odds ratios, 95% confidence intervals, and SVG plots.",
+    "gwas_mode": gwas_mode,
+    "do_snp_gwas": do_snp_gwas,
+    "container_backend": container_backend,
     "reference": {"reference_docker": reference_docker, "reference_species": reference_species, "reference_name": reference_name},
     "phenotype_coding": {"case": 1, "control": 0},
     "cases": cases,
@@ -2135,7 +3192,8 @@ provenance = {
         "control_frequency": control_frequency
     },
     "tables": {"top_priority_hits_rows": len(top_rows), "top_cards_displayed": min(TOP_CARD_COUNT, len(top_rows)), "top_table_max_rows": 100},
-    "plots": {"feature_index_association_plot": prefix + "_manhattan.svg", "qq": prefix + "_qq.svg"},
+    "plots": {"gene_feature_index_association_plot": prefix + "_manhattan.svg", "gene_qq": prefix + "_qq.svg", "population_pca": prefix + "_population_pca.svg", "kinship_heatmap": prefix + "_kinship_heatmap.svg", "snp_feature_index_association_plot": prefix + "_SNP_manhattan.svg", "snp_qq": prefix + "_SNP_qq.svg"},
+    "snp_gwas": {"status": snp_status, "pyseer_rows": snp_pyseer_n, "top_snp_rows": len(snp_top_rows), "vcf": Path('~{snp_vcf}').name},
     "generated_utc": generated
 }
 Path(prefix + "_run_provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
