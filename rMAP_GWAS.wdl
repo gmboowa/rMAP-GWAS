@@ -13,10 +13,19 @@ workflow rMAP_GWAS {
     Array[File]+ read2s
     Array[String]+ groups
 
-    # Phenotype coding
+    # Phenotype coding and biological display labels.
+    # Required binary GWAS grouping is provided by the `groups` input, expected as case/control.
+    # To make the HTML self-explanatory, map phenotype_display_values to the metadata column
+    # that defines the biological contrast, and set phenotype_name to that column name.
+    # Examples:
+    #   phenotype_name           = "specimen_source"
+    #   phenotype_display_values = this.<entity_set_members>.specimen_source
+    #
+    # Then the report automatically infers:
+    #   case    -> case (blood)
+    #   control -> control (sputum)
     String phenotype_name = "case_control"
-    String case_label = "case"
-    String control_label = "control"
+    Array[String] phenotype_display_values = []
 
     # Analysis controls
     Float min_af = 0.01
@@ -28,6 +37,12 @@ workflow rMAP_GWAS {
     # for mutation-mediated phenotypes such as MTBC drug resistance.
     String gwas_mode = "gene_presence_absence"
     Boolean do_snp_gwas = false
+
+    # Optional recombination assessment/filtering for SNP GWAS.
+    # Default is false to keep MTBC/clonal-organism runs simple and to avoid adding
+    # runtime to gene-only or smoke-test analyses. Enable for recombining bacteria
+    # where recombinant blocks may inflate SNP associations.
+    Boolean do_gubbins = false
     Float snp_min_qual = 20.0
     String container_backend = "docker"
 
@@ -46,18 +61,21 @@ workflow rMAP_GWAS {
     Int annotation_threads = 4
     Int pangenome_threads = 4
     Int gwas_threads = 4
+    Int gubbins_threads = 4
 
     Int fastp_memory_gb = 8
     Int assembly_memory_gb = 32
     Int annotation_memory_gb = 16
     Int pangenome_memory_gb = 32
     Int gwas_memory_gb = 32
+    Int gubbins_memory_gb = 16
 
     Int fastp_disk_gb = 50
     Int assembly_disk_gb = 200
     Int pangenome_disk_gb = 300
     Int gwas_disk_gb = 300
     Int snp_disk_gb = 300
+    Int gubbins_disk_gb = 300
 
     # Docker images
     String fastp_docker = "quay.io/biocontainers/fastp:0.23.4--hadf994f_2"
@@ -72,6 +90,8 @@ workflow rMAP_GWAS {
     # Dedicated reference-based SNP-calling image. This keeps mapping/SNP calling
     # separate from the pyseer/statistics image and avoids missing bwa/samtools/bcftools errors.
     String snp_calling_docker = "staphb/snippy:4.6.0"
+    # Optional recombination module. Used only when do_gubbins=true.
+    String gubbins_docker = "staphb/gubbins:latest"
     String python_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.2"
     # Docker image used for post-GWAS reference annotation and plot generation.
     # Keep this Python-capable; the task uses pure Python and does not require BLAST.
@@ -84,10 +104,16 @@ workflow rMAP_GWAS {
     String reference_name = "MTBC_2026_06"
   }
 
+  # Internal binary labels. Keep the Terra metadata table simple by using
+  # group=case/control and phenotype_display_values for the biological meaning.
+  String case_label = "case"
+  String control_label = "control"
+
   # Use sample-set arrays directly.
   Array[String]+ all_sample_names = sample_names
   Array[File]+ all_read1s = read1s
   Array[File]+ all_read2s = read2s
+  Array[String] phenotype_display_values_for_report = phenotype_display_values
 
   # Shovill checks usable RAM inside the VM and fails if --ram is >= available RAM.
   # Cromwell VMs expose slightly less usable RAM than the WDL runtime request, so keep
@@ -100,6 +126,7 @@ workflow rMAP_GWAS {
       read1_count = length(read1s),
       read2_count = length(read2s),
       groups = groups,
+      phenotype_display_values = phenotype_display_values_for_report,
       case_label = case_label,
       control_label = control_label,
       python_docker = python_docker
@@ -112,6 +139,7 @@ workflow rMAP_GWAS {
       phenotype_name = phenotype_name,
       case_label = case_label,
       control_label = control_label,
+      phenotype_display_values = phenotype_display_values_for_report,
       output_prefix = output_prefix,
       python_docker = python_docker,
       validation_report = VALIDATE_SAMPLE_SET_INPUTS.validation_report
@@ -182,6 +210,7 @@ workflow rMAP_GWAS {
   call GENERATE_POPULATION_STRUCTURE_PLOTS {
     input:
       phenotype_tsv = PREPARE_PHENOTYPE_TABLE.phenotype_tsv,
+      phenotype_legend_tsv = PREPARE_PHENOTYPE_TABLE.phenotype_legend_tsv,
       mash_distances = MASH_DISTANCE_MATRIX.mash_distances,
       output_prefix = output_prefix,
       python_docker = python_docker
@@ -228,6 +257,12 @@ workflow rMAP_GWAS {
       python_docker = python_docker
   }
 
+  call MAKE_GUBBINS_PLACEHOLDERS {
+    input:
+      output_prefix = snp_output_prefix,
+      python_docker = python_docker
+  }
+
   if (do_snp_gwas) {
     call SNP_CALLING_SNIPPY {
       input:
@@ -242,10 +277,25 @@ workflow rMAP_GWAS {
         docker = snp_calling_docker
     }
 
+    if (do_gubbins) {
+      call GUBBINS_RECOMBINATION_FILTER {
+        input:
+          core_alignment = SNP_CALLING_SNIPPY.snippy_core_alignment,
+          snp_vcf = SNP_CALLING_SNIPPY.snp_vcf,
+          output_prefix = snp_output_prefix,
+          threads = gubbins_threads,
+          memory_gb = gubbins_memory_gb,
+          disk_gb = gubbins_disk_gb,
+          docker = gubbins_docker
+      }
+    }
+
+    File snp_vcf_for_pyseer = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_filtered_vcf, SNP_CALLING_SNIPPY.snp_vcf])
+
     call PYSEER_SNP_GWAS {
       input:
         phenotype_tsv = PREPARE_PHENOTYPE_TABLE.phenotype_tsv,
-        snp_vcf = SNP_CALLING_SNIPPY.snp_vcf,
+        snp_vcf = snp_vcf_for_pyseer,
         mash_distances = MASH_DISTANCE_MATRIX.mash_distances,
         min_af = min_af,
         max_af = max_af,
@@ -262,7 +312,7 @@ workflow rMAP_GWAS {
       input:
         phenotype_tsv = PREPARE_PHENOTYPE_TABLE.phenotype_tsv,
         pyseer_snp_assoc = PYSEER_SNP_GWAS.pyseer_snp_assoc,
-        snp_vcf = SNP_CALLING_SNIPPY.snp_vcf,
+        snp_vcf = snp_vcf_for_pyseer,
         reference_genbank = EXTRACT_REFERENCE_GENBANK_FROM_DOCKER.reference_genbank,
         significance_alpha = significance_alpha,
         output_prefix = snp_output_prefix,
@@ -272,7 +322,7 @@ workflow rMAP_GWAS {
     call GENERATE_SNP_GWAS_PLOTS {
       input:
         pyseer_snp_assoc = PYSEER_SNP_GWAS.pyseer_snp_assoc,
-        snp_vcf = SNP_CALLING_SNIPPY.snp_vcf,
+        snp_vcf = snp_vcf_for_pyseer,
         output_prefix = snp_output_prefix,
         significance_alpha = significance_alpha,
         max_points = plot_max_points,
@@ -280,7 +330,12 @@ workflow rMAP_GWAS {
     }
   }
 
-  File snp_vcf_for_report = select_first([SNP_CALLING_SNIPPY.snp_vcf, MAKE_SNP_GWAS_PLACEHOLDERS.snp_vcf])
+  File snp_vcf_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_filtered_vcf, SNP_CALLING_SNIPPY.snp_vcf, MAKE_SNP_GWAS_PLACEHOLDERS.snp_vcf])
+  File gubbins_summary_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_summary, MAKE_GUBBINS_PLACEHOLDERS.gubbins_summary])
+  File gubbins_filtered_alignment_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_filtered_alignment, MAKE_GUBBINS_PLACEHOLDERS.gubbins_filtered_alignment])
+  File gubbins_recombination_gff_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_recombination_gff, MAKE_GUBBINS_PLACEHOLDERS.gubbins_recombination_gff])
+  File gubbins_log_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_log, MAKE_GUBBINS_PLACEHOLDERS.gubbins_log])
+  File gubbins_filtered_vcf_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_filtered_vcf, MAKE_GUBBINS_PLACEHOLDERS.gubbins_filtered_vcf])
   File snp_pyseer_assoc_for_report = select_first([PYSEER_SNP_GWAS.pyseer_snp_assoc, MAKE_SNP_GWAS_PLACEHOLDERS.pyseer_snp_assoc])
   File snp_top_hits_for_report = select_first([PRIORITIZE_SNP_GWAS_HITS.snp_top_hits, MAKE_SNP_GWAS_PLACEHOLDERS.snp_top_hits])
   File snp_all_significant_hits_for_report = select_first([PRIORITIZE_SNP_GWAS_HITS.snp_all_significant_hits, MAKE_SNP_GWAS_PLACEHOLDERS.snp_all_significant_hits])
@@ -318,6 +373,7 @@ workflow rMAP_GWAS {
       output_prefix = output_prefix,
       validation_report = VALIDATE_SAMPLE_SET_INPUTS.validation_report,
       phenotype_tsv = PREPARE_PHENOTYPE_TABLE.phenotype_tsv,
+      phenotype_legend_tsv = PREPARE_PHENOTYPE_TABLE.phenotype_legend_tsv,
       top_priority_hits = ANNOTATE_GWAS_HITS_WITH_GENBANK.annotated_top_priority_hits,
       all_significant_hits = ANNOTATE_GWAS_HITS_WITH_GENBANK.annotated_all_significant_hits,
       reference_annotation_summary = ANNOTATE_GWAS_HITS_WITH_GENBANK.reference_annotation_summary,
@@ -331,8 +387,13 @@ workflow rMAP_GWAS {
       kinship_heatmap_svg = GENERATE_POPULATION_STRUCTURE_PLOTS.kinship_heatmap_svg,
       population_structure_summary = GENERATE_POPULATION_STRUCTURE_PLOTS.population_structure_summary,
       do_snp_gwas = do_snp_gwas,
+      do_gubbins = do_gubbins,
       gwas_mode = gwas_mode,
       container_backend = container_backend,
+      gubbins_summary = gubbins_summary_for_report,
+      gubbins_filtered_alignment = gubbins_filtered_alignment_for_report,
+      gubbins_recombination_gff = gubbins_recombination_gff_for_report,
+      gubbins_log = gubbins_log_for_report,
       snp_top_hits = snp_top_hits_for_report,
       snp_all_significant_hits = snp_all_significant_hits_for_report,
       snp_summary = snp_summary_for_report,
@@ -349,6 +410,8 @@ workflow rMAP_GWAS {
 
   output {
     File phenotype_tsv = PREPARE_PHENOTYPE_TABLE.phenotype_tsv
+    File phenotype_legend_tsv = PREPARE_PHENOTYPE_TABLE.phenotype_legend_tsv
+    File sample_groups_tsv = PREPARE_PHENOTYPE_TABLE.sample_groups_tsv
     Array[File] trimmed_read1s = FASTP_TRIM.trimmed_read1
     Array[File] trimmed_read2s = FASTP_TRIM.trimmed_read2
     Array[File] assemblies = SHOVILL_ASSEMBLE.contigs_fasta
@@ -374,6 +437,11 @@ workflow rMAP_GWAS {
     File reference_gff = EXTRACT_REFERENCE_GENBANK_FROM_DOCKER.reference_gff
     File reference_genbank = EXTRACT_REFERENCE_GENBANK_FROM_DOCKER.reference_genbank
     File snp_vcf = snp_vcf_for_report
+    File gubbins_summary = gubbins_summary_for_report
+    File gubbins_filtered_alignment = gubbins_filtered_alignment_for_report
+    File gubbins_recombination_gff = gubbins_recombination_gff_for_report
+    File gubbins_log = gubbins_log_for_report
+    File gubbins_filtered_vcf = gubbins_filtered_vcf_for_report
     File pyseer_snp_assoc = snp_pyseer_assoc_for_report
     File snp_top_hits = snp_top_hits_for_report
     File snp_all_significant_hits = snp_all_significant_hits_for_report
@@ -392,6 +460,7 @@ task VALIDATE_SAMPLE_SET_INPUTS {
     Int read1_count
     Int read2_count
     Array[String]+ groups
+    Array[String] phenotype_display_values
     String case_label
     String control_label
     String python_docker
@@ -405,8 +474,9 @@ sample_names = """~{sep='\n' sample_names}""".strip().splitlines()
 read1_count = int("~{read1_count}")
 read2_count = int("~{read2_count}")
 groups = """~{sep='\n' groups}""".strip().splitlines()
-case_label = "~{case_label}"
-control_label = "~{control_label}"
+phenotype_display_values = """~{sep='\n' phenotype_display_values}""".strip().splitlines()
+case_label = """~{case_label}"""
+control_label = """~{control_label}"""
 
 def norm(x):
     return str(x).strip().lower()
@@ -418,6 +488,12 @@ if not (len(sample_names) == read1_count == read2_count == len(groups)):
     errors.append(
         f"sample_names/read1s/read2s/groups have unequal lengths: "
         f"sample_names={len(sample_names)}, read1s={read1_count}, read2s={read2_count}, groups={len(groups)}"
+    )
+
+if phenotype_display_values and len(phenotype_display_values) != len(sample_names):
+    errors.append(
+        "phenotype_display_values was provided but its length does not match sample_names: "
+        f"phenotype_display_values={len(phenotype_display_values)}, sample_names={len(sample_names)}"
     )
 
 if len(sample_names) != len(set(sample_names)):
@@ -467,7 +543,11 @@ with open("validation_report.txt", "w") as out:
     out.write(f"Controls: {len(control_names)}\n")
     out.write(f"Total samples: {len(sample_names)}\n")
     out.write(f"Case label: {case_label}\n")
-    out.write(f"Control label: {control_label}\n\n")
+    out.write(f"Control label: {control_label}\n")
+    out.write(f"Phenotype display metadata values provided: {'yes' if phenotype_display_values else 'no'}\n")
+    if phenotype_display_values:
+        out.write(f"Unique phenotype display values: {', '.join(sorted(set(phenotype_display_values)))[:1000]}\n")
+    out.write("\n")
     if warnings:
         out.write("Warnings:\n")
         for w in warnings:
@@ -501,6 +581,7 @@ task PREPARE_PHENOTYPE_TABLE {
     String phenotype_name
     String case_label
     String control_label
+    Array[String] phenotype_display_values
     String output_prefix
     String python_docker
     File validation_report
@@ -510,49 +591,120 @@ task PREPARE_PHENOTYPE_TABLE {
 set -euo pipefail
 export PATH=/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
 python <<'PY'
+from collections import Counter
 sample_names = """~{sep='\n' sample_names}""".strip().splitlines()
 groups = """~{sep='\n' groups}""".strip().splitlines()
-phenotype = "~{phenotype_name}"
-case_label = "~{case_label}"
-control_label = "~{control_label}"
+phenotype_display_values = """~{sep='\n' phenotype_display_values}""".strip().splitlines()
+phenotype = """~{phenotype_name}""".strip() or "case_control"
+case_label = """~{case_label}""".strip() or "case"
+control_label = """~{control_label}""".strip() or "control"
+phenotype_display_name = phenotype if phenotype_display_values else ""
 
 def norm(x):
     return str(x).strip().lower()
 
+def clean_value(x):
+    x = str(x).strip()
+    if not x:
+        return ""
+    x = x.replace("_", " ").replace("-", " ")
+    x = " ".join(x.split())
+    words = []
+    for w in x.split(" "):
+        wl = w.lower()
+        if wl == "hiv":
+            words.append("HIV")
+        elif wl in ("mtb", "mtbc", "dna", "rna", "amr", "gwas"):
+            words.append(w.upper())
+        elif wl == "no":
+            words.append("No")
+        else:
+            words.append(w)
+    return " ".join(words)
+
+def summarize_values(values, fallback):
+    values = [clean_value(v) for v in values if str(v).strip()]
+    if not values:
+        return clean_value(fallback)
+    counts = Counter(values)
+    ordered = [v for v, c in counts.most_common()]
+    if len(ordered) == 1:
+        return ordered[0]
+    return "mixed: " + "; ".join(f"{v} (n={counts[v]})" for v in ordered)
+
+def display_label(base, detail):
+    detail = clean_value(detail)
+    if detail and norm(detail) not in {norm(base), norm(base + "s")}:
+        return f"{base} ({detail})"
+    return base
+
+def plural_label(base_label):
+    if base_label.startswith("case ") or base_label == "case":
+        return "cases" + base_label[len("case"):]
+    if base_label.startswith("control ") or base_label == "control":
+        return "controls" + base_label[len("control"):]
+    return base_label
+
 valid_case = {norm(case_label), "case", "cases", "1", "true", "yes"}
 valid_control = {norm(control_label), "control", "controls", "0", "false", "no"}
 
-rows = []
-errors = []
-for sample, group in zip(sample_names, groups):
-    g = norm(group)
-    if g in valid_case:
-        rows.append((sample, case_label, 1))
-    elif g in valid_control:
-        rows.append((sample, control_label, 0))
-    else:
-        errors.append(f"{sample}:{group}")
-
 if len(sample_names) != len(groups):
     raise SystemExit(f"sample_names and groups have unequal lengths: {len(sample_names)} vs {len(groups)}")
+if phenotype_display_values and len(phenotype_display_values) != len(sample_names):
+    raise SystemExit(f"phenotype_display_values has {len(phenotype_display_values)} values but sample_names has {len(sample_names)}")
+if not phenotype_display_values:
+    phenotype_display_values = [""] * len(sample_names)
+
+rows = []
+errors = []
+case_meta = []
+control_meta = []
+for sample, group, display_value in zip(sample_names, groups, phenotype_display_values):
+    g = norm(group)
+    if g in valid_case:
+        rows.append((sample, case_label, 1, display_value))
+        if display_value.strip():
+            case_meta.append(display_value)
+    elif g in valid_control:
+        rows.append((sample, control_label, 0, display_value))
+        if display_value.strip():
+            control_meta.append(display_value)
+    else:
+        errors.append(f"{sample}:{group}")
 if errors:
     raise SystemExit("Unrecognized group labels: " + ", ".join(errors[:10]))
 
+case_detail = summarize_values(case_meta, case_label)
+control_detail = summarize_values(control_meta, control_label)
+case_display = display_label("case", case_detail)
+control_display = display_label("control", control_detail)
+case_display_plural = plural_label(case_display)
+control_display_plural = plural_label(control_display)
+case_count = sum(1 for _,_,v,_ in rows if v == 1)
+control_count = sum(1 for _,_,v,_ in rows if v == 0)
+
 with open("~{output_prefix}_phenotypes.tsv", "w") as out:
     out.write("sample\t" + phenotype + "\n")
-    for sample, group_label, value in rows:
+    for sample, group_label, value, display_value in rows:
         out.write(f"{sample}\t{value}\n")
 
 with open("~{output_prefix}_sample_groups.tsv", "w") as out:
-    out.write("sample\tgroup\tphenotype_value\n")
-    for sample, group_label, value in rows:
-        out.write(f"{sample}\t{group_label}\t{value}\n")
+    out.write("sample\tgroup\tphenotype_value\tmetadata_display_column\tmetadata_display_value\tdisplay_label\n")
+    for sample, group_label, value, display_value in rows:
+        label = case_display if value == 1 else control_display
+        out.write(f"{sample}\t{group_label}\t{value}\t{phenotype_display_name}\t{clean_value(display_value)}\t{label}\n")
+
+with open("~{output_prefix}_phenotype_legend.tsv", "w") as out:
+    out.write("class\tnumeric_value\tinput_group_label\tmetadata_display_column\tmetadata_values\tn_samples\tdisplay_label\tdisplay_label_plural\n")
+    out.write(f"case\t1\t{case_label}\t{phenotype_display_name}\t{case_detail}\t{case_count}\t{case_display}\t{case_display_plural}\n")
+    out.write(f"control\t0\t{control_label}\t{phenotype_display_name}\t{control_detail}\t{control_count}\t{control_display}\t{control_display_plural}\n")
 PY
   >>>
 
   output {
     File phenotype_tsv = "~{output_prefix}_phenotypes.tsv"
     File sample_groups_tsv = "~{output_prefix}_sample_groups.tsv"
+    File phenotype_legend_tsv = "~{output_prefix}_phenotype_legend.tsv"
   }
 
   runtime {
@@ -2223,6 +2375,206 @@ EOF
   }
 }
 
+task MAKE_GUBBINS_PLACEHOLDERS {
+  input {
+    String output_prefix
+    String python_docker
+  }
+
+  command <<<
+set -euo pipefail
+cat > ~{output_prefix}_gubbins_summary.tsv <<'EOF'
+metric	value
+gubbins_status	not_run
+recommendation	Optional. Enable for recombining bacteria or strong lineage/recombination concerns; usually not required as a default for MTBC/clonal smoke-test runs.
+usage_note	Gubbins not requested. Primary SNP GWAS used the unfiltered Snippy/core VCF when SNP GWAS was enabled.
+EOF
+
+cat > ~{output_prefix}_gubbins.filtered_polymorphic_sites.fasta <<'EOF'
+EOF
+
+cat > ~{output_prefix}_gubbins.recombination_predictions.gff <<'EOF'
+##gff-version 3
+EOF
+
+cat > ~{output_prefix}_gubbins.filtered.snps.vcf <<'EOF'
+##fileformat=VCFv4.2
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT
+EOF
+
+cat > ~{output_prefix}_gubbins.log <<'EOF'
+Gubbins not run. Set do_gubbins=true to run optional recombination assessment/filtering for SNP GWAS.
+EOF
+  >>>
+
+  output {
+    File gubbins_summary = "~{output_prefix}_gubbins_summary.tsv"
+    File gubbins_filtered_alignment = "~{output_prefix}_gubbins.filtered_polymorphic_sites.fasta"
+    File gubbins_recombination_gff = "~{output_prefix}_gubbins.recombination_predictions.gff"
+    File gubbins_filtered_vcf = "~{output_prefix}_gubbins.filtered.snps.vcf"
+    File gubbins_log = "~{output_prefix}_gubbins.log"
+  }
+
+  runtime {
+    docker: python_docker
+    cpu: 1
+    memory: "1 GB"
+    disks: "local-disk 10 HDD"
+  }
+}
+
+
+task GUBBINS_RECOMBINATION_FILTER {
+  input {
+    File core_alignment
+    File snp_vcf
+    String output_prefix
+    Int threads
+    Int memory_gb
+    Int disk_gb
+    String docker
+  }
+
+  command <<<
+set -euo pipefail
+export PATH=/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
+
+cp ~{core_alignment} core.full.aln
+cp ~{snp_vcf} input.snps.vcf
+
+summary="~{output_prefix}_gubbins_summary.tsv"
+log="~{output_prefix}_gubbins.log"
+filtered_aln="~{output_prefix}_gubbins.filtered_polymorphic_sites.fasta"
+recomb_gff="~{output_prefix}_gubbins.recombination_predictions.gff"
+filtered_vcf="~{output_prefix}_gubbins.filtered.snps.vcf"
+regions_tsv="~{output_prefix}_gubbins.recombination_regions.tsv"
+
+cat > "$log" <<'EOF'
+Starting optional Gubbins recombination assessment/filtering.
+This module is recommended for recombining bacterial species or datasets where recombinant blocks may inflate SNP associations.
+For MTBC/clonal smoke-test runs, keep do_gubbins=false unless there is a specific recombination/lineage question.
+EOF
+
+# Always create valid fallback outputs so that optional Gubbins never prevents the rest of the SNP GWAS report from being generated.
+: > "$filtered_aln"
+cat > "$recomb_gff" <<'EOF'
+##gff-version 3
+EOF
+cp input.snps.vcf "$filtered_vcf"
+cat > "$regions_tsv" <<'EOF'
+contig	start	end
+EOF
+
+seq_count=$(grep -c '^>' core.full.aln || true)
+input_snp_records=$(grep -vc '^#' input.snps.vcf || true)
+status="not_run"
+filter_note="Primary SNP VCF copied through unchanged."
+
+if [ ! -s core.full.aln ]; then
+  status="skipped_empty_core_alignment"
+  echo "Gubbins skipped: Snippy core alignment is empty or missing." >> "$log"
+elif [ "$seq_count" -lt 3 ]; then
+  status="skipped_too_few_sequences"
+  echo "Gubbins skipped: fewer than 3 sequences in core alignment (${seq_count})." >> "$log"
+elif command -v run_gubbins.py >/dev/null 2>&1; then
+  echo "Running run_gubbins.py on Snippy core alignment with ${seq_count} sequences." >> "$log"
+  set +e
+  run_gubbins.py --prefix rmap_gubbins --threads ~{threads} core.full.aln >> "$log" 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    status="gubbins_failed_soft"
+    echo "Gubbins returned non-zero exit code ${rc}; continuing with unfiltered SNP VCF. See log for details." >> "$log"
+  else
+    status="run"
+    found_aln=$(find . -maxdepth 1 -type f \( -name 'rmap_gubbins*filtered_polymorphic_sites*.fasta' -o -name 'rmap_gubbins*filtered_polymorphic_sites*.fa' -o -name 'rmap_gubbins*filtered_polymorphic_sites*.aln' \) | head -n 1 || true)
+    found_gff=$(find . -maxdepth 1 -type f \( -name 'rmap_gubbins*recombination_predictions*.gff' -o -name 'rmap_gubbins*recombination_predictions*.gff3' \) | head -n 1 || true)
+
+    if [ -n "$found_aln" ] && [ -s "$found_aln" ]; then
+      cp "$found_aln" "$filtered_aln"
+    else
+      cp core.full.aln "$filtered_aln"
+      echo "Gubbins completed but filtered polymorphic-sites alignment was not found; copied core.full.aln as fallback." >> "$log"
+    fi
+
+    if [ -n "$found_gff" ] && [ -s "$found_gff" ]; then
+      cp "$found_gff" "$recomb_gff"
+      awk 'BEGIN{FS=OFS="\t"; print "contig","start","end"} $0 !~ /^#/ && NF >= 5 {print $1,$4,$5}' "$recomb_gff" > "$regions_tsv"
+
+      # Filter the SNP VCF by removing variants inside Gubbins-predicted recombinant regions.
+      awk 'BEGIN{FS=OFS="\t"}
+        FNR==NR {
+          if (FNR == 1) next
+          if (NF >= 3) { regs[$1] = regs[$1] $2 "-" $3 ";" }
+          next
+        }
+        /^#/ { print; next }
+        {
+          keep=1
+          n=split(regs[$1], intervals, ";")
+          for (i=1; i<=n; i++) {
+            if (intervals[i] == "") continue
+            split(intervals[i], b, "-")
+            if (($2 + 0) >= (b[1] + 0) && ($2 + 0) <= (b[2] + 0)) { keep=0; break }
+          }
+          if (keep) print
+        }' "$regions_tsv" input.snps.vcf > "$filtered_vcf"
+      filter_note="Primary SNP VCF filtered by removing variants inside Gubbins-predicted recombinant regions."
+    else
+      filter_note="Gubbins completed but no recombination GFF was found; primary SNP VCF copied through unchanged."
+      echo "$filter_note" >> "$log"
+    fi
+  fi
+else
+  status="gubbins_tool_not_found"
+  echo "Gubbins command run_gubbins.py was not found in the selected Docker image; continuing with unfiltered SNP VCF." >> "$log"
+fi
+
+filtered_snp_records=$(grep -vc '^#' "$filtered_vcf" || true)
+
+# Avoid sending an empty SNP VCF into pyseer when the Gubbins-filtered VCF removes every variant.
+# This keeps do_gubbins safe for small/smoke-test runs and records the fallback in the summary.
+if [ "$input_snp_records" -gt 0 ] && [ "$filtered_snp_records" -eq 0 ]; then
+  cp input.snps.vcf "$filtered_vcf"
+  filter_note="${filter_note} Filtered VCF contained zero SNP records, so the original Snippy SNP VCF was restored for pyseer to avoid an empty SNP-GWAS input."
+  filtered_snp_records=$(grep -vc '^#' "$filtered_vcf" || true)
+fi
+
+recombination_intervals=$(tail -n +2 "$regions_tsv" | grep -cv '^[[:space:]]*$' || true)
+
+cat > "$summary" <<EOF
+metric	value
+gubbins_status	${status}
+seq_count	${seq_count}
+input_snp_records	${input_snp_records}
+filtered_snp_records	${filtered_snp_records}
+recombination_intervals	${recombination_intervals}
+filtering_note	${filter_note}
+recommendation	Use do_gubbins=true for recombining bacteria such as Klebsiella pneumoniae, Escherichia coli, Salmonella, Streptococcus pneumoniae, Neisseria spp., and some Acinetobacter datasets, or when lineage/recombination structure is suspected. For MTBC and other highly clonal organisms, keep this optional and interpret mainly with SNP GWAS plus population-structure checks.
+usage_note	When enabled and Gubbins succeeds, SNP GWAS uses the Gubbins-filtered VCF; when skipped or unavailable, the original Snippy SNP VCF is used and the reason is recorded here.
+EOF
+
+cat "$summary" >> "$log"
+cat "$log" >&2
+  >>>
+
+  output {
+    File gubbins_summary = "~{output_prefix}_gubbins_summary.tsv"
+    File gubbins_filtered_alignment = "~{output_prefix}_gubbins.filtered_polymorphic_sites.fasta"
+    File gubbins_recombination_gff = "~{output_prefix}_gubbins.recombination_predictions.gff"
+    File gubbins_filtered_vcf = "~{output_prefix}_gubbins.filtered.snps.vcf"
+    File gubbins_log = "~{output_prefix}_gubbins.log"
+  }
+
+  runtime {
+    docker: docker
+    cpu: threads
+    memory: "~{memory_gb} GB"
+    disks: "local-disk ~{disk_gb} HDD"
+  }
+}
+
+
 task SNP_CALLING_SNIPPY {
   input {
     Array[String] sample_names
@@ -2246,19 +2598,38 @@ if [ ! -s reference.fasta ]; then
   exit 1
 fi
 
-python <<'PY'
-names = """~{sep='\n' sample_names}""".strip().splitlines()
-r1s = """~{sep='\n' read1s}""".strip().splitlines()
-r2s = """~{sep='\n' read2s}""".strip().splitlines()
-if not (len(names) == len(r1s) == len(r2s)):
-    raise SystemExit("sample_names/read1s/read2s have unequal lengths for SNP calling")
-if len(names) != len(set(names)):
-    raise SystemExit("sample_names must be unique for SNP calling")
-with open("snp_sample_manifest.tsv", "w") as out:
-    out.write("sample\tread1\tread2\n")
-    for n, r1, r2 in zip(names, r1s, r2s):
-        out.write(f"{n}\t{r1}\t{r2}\n")
-PY
+# Write the SNP-calling sample manifest using POSIX tools rather than Python f-strings.
+# The staphb/snippy:4.6.0 image may expose an older Python as `python`, which cannot parse f-strings.
+cat > sample_names.txt <<'EOF_SAMPLE_NAMES'
+~{sep='\n' sample_names}
+EOF_SAMPLE_NAMES
+
+cat > read1s.txt <<'EOF_READ1S'
+~{sep='\n' read1s}
+EOF_READ1S
+
+cat > read2s.txt <<'EOF_READ2S'
+~{sep='\n' read2s}
+EOF_READ2S
+
+n_names=$(grep -cv '^[[:space:]]*$' sample_names.txt || true)
+n_r1=$(grep -cv '^[[:space:]]*$' read1s.txt || true)
+n_r2=$(grep -cv '^[[:space:]]*$' read2s.txt || true)
+
+if [ "$n_names" -ne "$n_r1" ] || [ "$n_names" -ne "$n_r2" ]; then
+  echo "ERROR: sample_names/read1s/read2s have unequal lengths for SNP calling" >&2
+  echo "sample_names=${n_names}; read1s=${n_r1}; read2s=${n_r2}" >&2
+  exit 1
+fi
+
+if [ "$(sort sample_names.txt | uniq -d | grep -cv '^[[:space:]]*$' || true)" -ne 0 ]; then
+  echo "ERROR: sample_names must be unique for SNP calling" >&2
+  sort sample_names.txt | uniq -d >&2
+  exit 1
+fi
+
+printf 'sample\tread1\tread2\n' > snp_sample_manifest.tsv
+paste sample_names.txt read1s.txt read2s.txt >> snp_sample_manifest.tsv
 
 {
   echo "Starting reference-based SNP calling with Snippy"
@@ -2295,66 +2666,44 @@ snippy-core --ref reference.fasta --prefix core snippy_out/* >> snp_calling.log 
 
 if [ ! -s core.vcf ]; then
   echo "WARNING: snippy-core did not produce a non-empty core.vcf; creating an empty cohort VCF." >> snp_calling.log
-  python <<'PY'
-from pathlib import Path
-samples = []
-with open("snp_sample_manifest.tsv") as fh:
-    next(fh)
-    for line in fh:
-        if line.strip():
-            samples.append(line.split("\t", 1)[0])
-with open("core.vcf", "w") as out:
-    out.write("##fileformat=VCFv4.2\n")
-    out.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT")
-    if samples:
-        out.write("\t" + "\t".join(samples))
-    out.write("\n")
-Path("core.full.aln").write_text("")
-PY
+  {
+    echo '##fileformat=VCFv4.2'
+    printf '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT'
+    tail -n +2 snp_sample_manifest.tsv | cut -f1 | while read -r sample; do
+      printf '\t%s' "$sample"
+    done
+    printf '\n'
+  } > core.vcf
+  : > core.full.aln
 fi
 
-python <<'PY'
-from pathlib import Path
-import math
-qual_threshold = float("~{snp_min_qual}")
-in_path = Path("core.vcf")
-out_path = Path("rmap_gwas.snps.vcf")
-kept = 0
-total = 0
-with in_path.open(errors="replace") as inp, out_path.open("w") as out:
-    for line in inp:
-        if line.startswith("##"):
-            out.write(line)
-            continue
-        if line.startswith("#CHROM"):
-            out.write(line)
-            continue
-        if not line.strip():
-            continue
-        total += 1
-        parts = line.rstrip("\n").split("\t")
-        if len(parts) < 8:
-            continue
-        chrom, pos, vid, ref, alt, qual = parts[:6]
-        if len(ref) != 1 or any(len(a) != 1 for a in alt.split(",")) or "," in alt:
-            continue
-        try:
-            q = float(qual) if qual not in (".", "", "NA") else math.inf
-        except Exception:
-            q = math.inf
-        if q < qual_threshold:
-            continue
-        parts[2] = f"{chrom}_{pos}_{ref}_{alt}"
-        out.write("\t".join(parts) + "\n")
-        kept += 1
-Path("snp_calling_summary.tsv").write_text(
-    "metric\tvalue\n"
-    "snp_calling_tool\tsnippy_snippy-core\n"
-    f"raw_core_vcf_records\t{total}\n"
-    f"snps_after_qual_filter\t{kept}\n"
-    f"qual_threshold\t{qual_threshold}\n"
-)
-PY
+# Keep only simple biallelic SNPs above the requested QUAL threshold.
+awk -v qthr="~{snp_min_qual}" '
+BEGIN { FS=OFS="\t"; kept=0; total=0; out="rmap_gwas.snps.vcf"; summary="snp_calling_summary.tsv" }
+/^##/ { print > out; next }
+/^#CHROM/ { print > out; next }
+NF == 0 { next }
+{
+  total++
+  ref=$4
+  alt=$5
+  qual=$6
+  if (length(ref) != 1) next
+  if (index(alt, ",") > 0 || length(alt) != 1) next
+  q=qual
+  if (qual == "." || qual == "" || qual == "NA") q=1e99
+  if ((q + 0) < qthr) next
+  $3=$1 "_" $2 "_" $4 "_" $5
+  print > out
+  kept++
+}
+END {
+  print "metric", "value" > summary
+  print "snp_calling_tool", "snippy_snippy-core" >> summary
+  print "raw_core_vcf_records", total >> summary
+  print "snps_after_qual_filter", kept >> summary
+  print "qual_threshold", qthr >> summary
+}' core.vcf
 
 if [ ! -e core.full.aln ]; then
   touch core.full.aln
@@ -2380,7 +2729,6 @@ cat snp_calling.log >&2
     disks: "local-disk ~{disk_gb} HDD"
   }
 }
-
 
 task PYSEER_SNP_GWAS {
   input {
@@ -2715,6 +3063,7 @@ PY
 task GENERATE_POPULATION_STRUCTURE_PLOTS {
   input {
     File phenotype_tsv
+    File phenotype_legend_tsv
     File mash_distances
     String output_prefix
     String python_docker
@@ -2729,6 +3078,28 @@ import csv, html
 import numpy as np
 
 prefix = "~{output_prefix}"
+
+def esc(x): return html.escape(str(x), quote=True)
+
+def read_legend(path):
+    labels = {"case": "case", "control": "control", "cases": "cases", "controls": "controls", "metadata_column": ""}
+    p = Path(path)
+    if p.exists() and p.stat().st_size:
+        with p.open(errors="replace") as fh:
+            reader = csv.DictReader(fh, delimiter="\t")
+            for row in reader:
+                cls = (row.get("class", "") or "").strip().lower()
+                if cls == "case":
+                    labels["case"] = row.get("display_label", "case") or "case"
+                    labels["cases"] = row.get("display_label_plural", "cases") or "cases"
+                    labels["metadata_column"] = row.get("metadata_display_column", "") or labels["metadata_column"]
+                elif cls == "control":
+                    labels["control"] = row.get("display_label", "control") or "control"
+                    labels["controls"] = row.get("display_label_plural", "controls") or "controls"
+                    labels["metadata_column"] = row.get("metadata_display_column", "") or labels["metadata_column"]
+    return labels
+
+legend = read_legend("~{phenotype_legend_tsv}")
 phenotypes = {}
 with open("~{phenotype_tsv}") as fh:
     hdr = fh.readline().rstrip("\n").split("\t")
@@ -2761,8 +3132,7 @@ if D.size:
 else:
     coords = np.zeros((0,2)); var1 = var2 = 0.0
 
-def esc(x): return html.escape(str(x), quote=True)
-w,h,ml,mt,pw,ph = 980,520,74,58,760,380
+w,h,ml,mt,pw,ph = 980,560,74,58,760,380
 xs = coords[:,0] if len(coords) else np.array([0,1])
 ys = coords[:,1] if len(coords) else np.array([0,1])
 xmin,xmax = float(xs.min()), float(xs.max())
@@ -2771,14 +3141,22 @@ if xmax == xmin: xmax += 1
 if ymax == ymin: ymax += 1
 def sx(x): return ml + (float(x)-xmin)/(xmax-xmin)*pw
 def sy(y): return mt + ph - (float(y)-ymin)/(ymax-ymin)*ph
-parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">','<rect width="100%" height="100%" rx="18" fill="#071226"/>','<text x="74" y="34" fill="#eef6ff" font-family="Arial" font-size="22" font-weight="700">Population structure: Mash PCoA</text>']
+parts = [
+    f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">',
+    '<rect width="100%" height="100%" rx="18" fill="#071226"/>',
+    '<text x="74" y="34" fill="#eef6ff" font-family="Arial" font-size="22" font-weight="700">Population structure: Mash PCoA</text>'
+]
 parts.append(f'<line x1="{ml}" y1="{mt+ph}" x2="{ml+pw}" y2="{mt+ph}" stroke="#8ecaff"/>')
 parts.append(f'<line x1="{ml}" y1="{mt}" x2="{ml}" y2="{mt+ph}" stroke="#8ecaff"/>')
 for i,name in enumerate(names):
     val = phenotypes.get(name, 0)
     color = '#ff7ab6' if val == 1 else '#21d4fd'
-    label = 'case' if val == 1 else 'control'
-    parts.append(f'<circle cx="{sx(coords[i,0]):.1f}" cy="{sy(coords[i,1]):.1f}" r="5" fill="{color}" opacity="0.80"><title>{esc(name)} ({label})</title></circle>')
+    label = legend['case'] if val == 1 else legend['control']
+    parts.append(f'<circle cx="{sx(coords[i,0]):.1f}" cy="{sy(coords[i,1]):.1f}" r="5" fill="{color}" opacity="0.80"><title>{esc(name)} ({esc(label)})</title></circle>')
+lx, ly = ml + pw + 25, mt + 22
+parts.append(f'<rect x="{lx-10}" y="{ly-24}" width="140" height="72" rx="10" fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.15)"/>')
+parts.append(f'<circle cx="{lx}" cy="{ly}" r="6" fill="#ff7ab6" opacity="0.85"/><text x="{lx+14}" y="{ly+5}" fill="#dbeafe" font-family="Arial" font-size="12">{esc(legend["case"])}</text>')
+parts.append(f'<circle cx="{lx}" cy="{ly+28}" r="6" fill="#21d4fd" opacity="0.85"/><text x="{lx+14}" y="{ly+33}" fill="#dbeafe" font-family="Arial" font-size="12">{esc(legend["control"])}</text>')
 parts.append(f'<text x="{w/2}" y="{h-18}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle">PCoA1 ({var1:.1f}% variance)</text>')
 parts.append(f'<text x="20" y="{h/2}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle" transform="rotate(-90 20 {h/2})">PCoA2 ({var2:.1f}% variance)</text>')
 parts.append('</svg>')
@@ -2789,19 +3167,28 @@ maxd = float(np.max(D)) if D.size else 1.0
 if maxd <= 0: maxd = 1.0
 cell = max(5, min(22, int(760/max(1,len(order)))))
 left,top = 150,70
-hw,hh = left + cell*max(1,len(order)) + 60, top + cell*max(1,len(order)) + 80
-hp = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{hw}" height="{hh}" viewBox="0 0 {hw} {hh}">','<rect width="100%" height="100%" rx="18" fill="#071226"/>','<text x="40" y="34" fill="#eef6ff" font-family="Arial" font-size="22" font-weight="700">Mash distance / kinship matrix</text>']
+hw,hh = left + cell*max(1,len(order)) + 120, top + cell*max(1,len(order)) + 105
+hp = [
+    f'<svg xmlns="http://www.w3.org/2000/svg" width="{hw}" height="{hh}" viewBox="0 0 {hw} {hh}">',
+    '<rect width="100%" height="100%" rx="18" fill="#071226"/>',
+    '<text x="40" y="34" fill="#eef6ff" font-family="Arial" font-size="22" font-weight="700">Mash distance / kinship matrix</text>'
+]
 for yi,i in enumerate(order):
     for xj,j in enumerate(order):
         sim = 1.0 - (float(D[i,j])/maxd) if D.size else 0.0
         fill = '#ff7ab6' if phenotypes.get(names[i],0) == phenotypes.get(names[j],0) else '#21d4fd'
         op = 0.18 + 0.75*max(0,min(1,sim))
-        hp.append(f'<rect x="{left+xj*cell}" y="{top+yi*cell}" width="{cell}" height="{cell}" fill="{fill}" opacity="{op:.2f}"/>')
+        hp.append(f'<rect x="{left+xj*cell}" y="{top+yi*cell}" width="{cell}" height="{cell}" fill="{fill}" opacity="{op:.2f}"><title>{esc(names[i])} vs {esc(names[j])}</title></rect>')
+legend_y = top + cell*max(1,len(order)) + 35
+hp.append(f'<circle cx="40" cy="{legend_y}" r="6" fill="#ff7ab6" opacity="0.85"/><text x="56" y="{legend_y+5}" fill="#dbeafe" font-family="Arial" font-size="12">{esc(legend["case"])} samples</text>')
+hp.append(f'<circle cx="240" cy="{legend_y}" r="6" fill="#21d4fd" opacity="0.85"/><text x="256" y="{legend_y+5}" fill="#dbeafe" font-family="Arial" font-size="12">{esc(legend["control"])} samples</text>')
 hp.append('</svg>')
 Path(prefix + "_kinship_heatmap.svg").write_text("\n".join(hp))
 with open(prefix + "_population_structure_summary.tsv", "w") as out:
     out.write("metric\tvalue\n")
     out.write(f"phenotype\t{phenotype_name}\n")
+    out.write(f"case_label\t{legend['case']}\n")
+    out.write(f"control_label\t{legend['control']}\n")
     out.write(f"samples\t{len(names)}\n")
     out.write(f"pcoa1_variance_percent\t{var1:.4f}\n")
     out.write(f"pcoa2_variance_percent\t{var2:.4f}\n")
@@ -2823,12 +3210,12 @@ PY
   }
 }
 
-
 task MERGE_RMAP_GWAS_REPORT {
   input {
     String output_prefix
     File validation_report
     File phenotype_tsv
+    File phenotype_legend_tsv
     File top_priority_hits
     File all_significant_hits
     File reference_annotation_summary
@@ -2842,8 +3229,13 @@ task MERGE_RMAP_GWAS_REPORT {
     File kinship_heatmap_svg
     File population_structure_summary
     Boolean do_snp_gwas
+    Boolean do_gubbins
     String gwas_mode
     String container_backend
+    File gubbins_summary
+    File gubbins_filtered_alignment
+    File gubbins_recombination_gff
+    File gubbins_log
     File snp_top_hits
     File snp_all_significant_hits
     File snp_summary
@@ -2863,16 +3255,16 @@ set -euo pipefail
 export PATH=/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
 python <<'PY'
 from pathlib import Path
-import html, json, csv, datetime
+import html, json, csv, datetime, re
 
 prefix = "~{output_prefix}"
-reference_docker = "~{reference_docker}"
-reference_species = "~{reference_species}"
-reference_name = "~{reference_name}"
+reference_docker = """~{reference_docker}"""
+reference_species = """~{reference_species}"""
+reference_name = """~{reference_name}"""
 do_snp_gwas = "~{do_snp_gwas}".strip().lower() == "true"
-gwas_mode = "~{gwas_mode}"
-container_backend = "~{container_backend}"
-TOP_CARD_COUNT = 5
+do_gubbins = "~{do_gubbins}".strip().lower() == "true"
+gwas_mode = """~{gwas_mode}"""
+container_backend = """~{container_backend}"""
 
 
 def safe_text(value):
@@ -2913,24 +3305,121 @@ def tsv_count(path):
     return max(0, len(read_tsv(path)) - 1)
 
 
+def summary_value(path, key, default=""):
+    header, rows = read_tsv_dicts(path)
+    for row in rows:
+        if row.get("metric") == key:
+            return row.get("value", default)
+    return default
+
+
 def read_svg(path):
-    txt = read_text(path, limit=350000)
+    txt = read_text(path, limit=450000)
     return txt if txt.lstrip().startswith("<svg") else "<p class=\"empty\">Plot not available.</p>"
 
 
-def confidence_rule(conf):
-    conf = (conf or "none").lower()
-    rules = {
-        "high": "High: identity >= 95% and coverage >= 90%, or exact qualifier-level support. Strong reference-supported annotation.",
-        "medium": "Medium: identity >= 85% and coverage >= 70%. Plausible annotation; inspect manually.",
-        "low": "Low: identity >= 60% and coverage >= 50%, or weak/partial support. Tentative annotation only.",
-        "none": "None: no usable GenBank match. Keep the Panaroo/Prokka cluster label."
+def load_legend(path):
+    legend = {
+        "case": "case", "control": "control",
+        "cases": "cases", "controls": "controls",
+        "case_detail": "", "control_detail": "",
+        "case_n": "0", "control_n": "0", "metadata_column": ""
     }
-    return rules.get(conf, rules["none"])
+    header, rows = read_tsv_dicts(path)
+    for row in rows:
+        cls = (row.get("class", "") or "").strip().lower()
+        if cls == "case":
+            legend["case"] = row.get("display_label", "case") or "case"
+            legend["cases"] = row.get("display_label_plural", "cases") or "cases"
+            legend["case_detail"] = row.get("metadata_values", "") or ""
+            legend["case_n"] = row.get("n_samples", "0") or "0"
+            legend["metadata_column"] = row.get("metadata_display_column", "") or legend["metadata_column"]
+        elif cls == "control":
+            legend["control"] = row.get("display_label", "control") or "control"
+            legend["controls"] = row.get("display_label_plural", "controls") or "controls"
+            legend["control_detail"] = row.get("metadata_values", "") or ""
+            legend["control_n"] = row.get("n_samples", "0") or "0"
+            legend["metadata_column"] = row.get("metadata_display_column", "") or legend["metadata_column"]
+    return legend
+
+legend = load_legend("~{phenotype_legend_tsv}")
+case_label = legend["case"]
+control_label = legend["control"]
+cases_label = legend["cases"]
+controls_label = legend["controls"]
+
+
+def replace_group_terms_text(txt):
+    replacements = [
+        (r"\bCases\b", cases_label[:1].upper() + cases_label[1:]),
+        (r"\bControls\b", controls_label[:1].upper() + controls_label[1:]),
+        (r"\bcases\b", cases_label),
+        (r"\bcontrols\b", controls_label),
+        (r"\bCase\b", case_label[:1].upper() + case_label[1:]),
+        (r"\bControl\b", control_label[:1].upper() + control_label[1:]),
+        (r"\bcase\b", case_label),
+        (r"\bcontrol\b", control_label),
+    ]
+    out = str(txt)
+    for pattern, repl in replacements:
+        out = re.sub(pattern, repl, out)
+    return out
+
+
+def display_cell(value, column=""):
+    v = str(value if value is not None else "")
+    vl = v.strip().lower()
+    if column == "enriched_in":
+        if vl in {"case", "cases", "1"}:
+            return cases_label
+        if vl in {"control", "controls", "0"}:
+            return controls_label
+    if vl == "cases":
+        return cases_label
+    if vl == "controls":
+        return controls_label
+    if vl == "case":
+        return case_label
+    if vl == "control":
+        return control_label
+    return v
+
+
+def display_header(col):
+    if col.startswith("case_"):
+        return case_label + " " + col[len("case_"):].replace("_", " ")
+    if col.startswith("control_"):
+        return control_label + " " + col[len("control_"):].replace("_", " ")
+    if col == "enriched_in": return "enriched in"
+    return col.replace("_", " ")
+
+
+def preferred_order(header):
+    preferred = [
+        "rank", "feature_id", "variant_id", "feature_type", "display_name", "display_label", "contig", "position", "ref", "alt",
+        "gene_name", "product", "reference_locus_tag", "reference_gene", "reference_product", "annotation_confidence",
+        "reference_identity", "reference_coverage", "interpretation_note", "annotation_evidence",
+        "case_present", "case_alt", "case_total", "case_frequency", "control_present", "control_alt", "control_total", "control_frequency",
+        "enriched_in", "beta", "odds_ratio", "odds_ratio_ci95", "odds_ratio_ci95_lower", "odds_ratio_ci95_upper", "pyseer_pvalue", "q_value", "priority_score",
+        "annotation_source", "reference_match_type", "reference_location", "annotation_note", "cluster_member_ids"
+    ]
+    seen, ordered = set(), []
+    for c in preferred:
+        if c in header and c not in seen:
+            ordered.append(c); seen.add(c)
+    for c in header:
+        if c not in seen:
+            ordered.append(c); seen.add(c)
+    return ordered
+
+
+def confidence_badge_class(conf):
+    c = (conf or "none").lower()
+    return "conf-" + c if c in ("high", "medium", "low") else "conf-none"
 
 
 def compute_display_name(row):
-    feature = row.get("feature_id", "") or row.get("gene", "") or row.get("variant", "") or "NA"
+    feature = row.get("feature_id", "") or row.get("variant_id", "") or row.get("gene", "") or row.get("variant", "") or "NA"
     conf = (row.get("annotation_confidence", "none") or "none").lower()
     ref_gene = row.get("reference_gene", "") or ""
     ref_locus = row.get("reference_locus_tag", "") or ""
@@ -2949,7 +3438,7 @@ def compute_display_name(row):
 
 
 def display_label(row):
-    feature = row.get("feature_id", "") or "NA"
+    feature = row.get("feature_id", "") or row.get("variant_id", "") or row.get("variant", "") or "NA"
     ref_locus = row.get("reference_locus_tag", "") or "no_reference_locus"
     conf = row.get("annotation_confidence", "none") or "none"
     identity = row.get("reference_identity", "")
@@ -2961,42 +3450,13 @@ def display_label(row):
     return " | ".join(bits)
 
 
-def confidence_badge_class(conf):
-    c = (conf or "none").lower()
-    if c in ("high", "medium", "low"):
-        return "conf-" + c
-    return "conf-none"
-
-
-def preferred_order(header):
-    preferred = [
-        "rank", "feature_id", "variant_id", "feature_type", "display_name", "display_label", "contig", "position", "ref", "alt", "gene_name", "product",
-        "reference_locus_tag", "reference_gene", "reference_product", "annotation_confidence",
-        "reference_identity", "reference_coverage", "interpretation_note", "annotation_evidence",
-        "case_present", "case_alt", "case_total", "case_frequency", "control_present", "control_alt", "control_total", "control_frequency",
-        "enriched_in", "beta", "odds_ratio", "odds_ratio_ci95", "odds_ratio_ci95_lower", "odds_ratio_ci95_upper", "pyseer_pvalue", "q_value", "priority_score",
-        "feature_type", "annotation_source", "reference_match_type", "reference_location", "annotation_note", "cluster_member_ids"
-    ]
-    seen = set()
-    ordered = []
-    for c in preferred:
-        if c in header and c not in seen:
-            ordered.append(c)
-            seen.add(c)
-    for c in header:
-        if c not in seen:
-            ordered.append(c)
-            seen.add(c)
-    return ordered
-
-
 def table_from_tsv(path, max_rows=100, reorder=True):
     header, rows = read_tsv_dicts(path)
     if not header:
         return "<p class=\"empty\">No rows available.</p>"
     cols = preferred_order(header) if reorder else header
     out = ["<div class=\"table-wrap\"><table>", "<thead><tr>"]
-    out.extend(f"<th>{safe_text(x)}</th>" for x in cols)
+    out.extend(f"<th>{safe_text(display_header(x))}</th>" for x in cols)
     out.append("</tr></thead><tbody>")
     for row in rows[:max_rows]:
         out.append("<tr>")
@@ -3006,6 +3466,7 @@ def table_from_tsv(path, max_rows=100, reorder=True):
                 value = compute_display_name(row)
             if c == "display_label" and not value:
                 value = display_label(row)
+            value = display_cell(value, c)
             if c == "annotation_confidence":
                 klass = confidence_badge_class(value)
                 out.append(f"<td><span class=\"conf {klass}\">{safe_text(value or 'none')}</span></td>")
@@ -3013,14 +3474,11 @@ def table_from_tsv(path, max_rows=100, reorder=True):
                 out.append(f"<td>{safe_text(value)}</td>")
         out.append("</tr>")
     out.append("</tbody></table></div>")
-    if len(rows) > max_rows:
-        out.append(f"<p class=\"note\">Showing first {max_rows} of {len(rows)} rows.</p>")
-    else:
-        out.append(f"<p class=\"note\">Showing all {len(rows)} rows in this table.</p>")
+    out.append(f"<p class=\"note\">Showing {min(len(rows), max_rows)} of {len(rows)} rows.</p>")
     return "\n".join(out)
 
 
-def top_cards(rows, n=5):
+def top_cards(rows, n=5, title_prefix="Rank"):
     if not rows:
         return "<p class=\"empty\">No prioritized hits available.</p>"
     cards = ["<div class=\"top-grid\">"]
@@ -3028,30 +3486,37 @@ def top_cards(rows, n=5):
         name = compute_display_name(row)
         conf = row.get("annotation_confidence", "none") or "none"
         klass = confidence_badge_class(conf)
+        stats = []
+        if row.get("enriched_in"):
+            stats.append("enriched: " + display_cell(row.get("enriched_in"), "enriched_in"))
+        if row.get("pyseer_pvalue"):
+            stats.append("p=" + row.get("pyseer_pvalue"))
+        if row.get("odds_ratio"):
+            stats.append("OR=" + row.get("odds_ratio"))
         cards.append("<div class=\"top-card\">")
-        cards.append(f"<div class=\"top-rank\">Rank {safe_text(row.get('rank', i))}</div>")
+        cards.append(f"<div class=\"top-rank\">{safe_text(title_prefix)} {safe_text(row.get('rank', i))}</div>")
         cards.append(f"<div class=\"top-name\">{safe_text(name)}</div>")
         cards.append(f"<div class=\"top-label\">{safe_text(display_label(row))}</div>")
         cards.append(f"<div><span class=\"conf {klass}\">{safe_text(conf)} confidence</span></div>")
         product = row.get("reference_product", "") or row.get("product", "") or ""
         if product:
             cards.append(f"<p>{safe_text(product)}</p>")
-        stats = []
-        if row.get("enriched_in"):
-            stats.append("enriched: " + row.get("enriched_in"))
-        if row.get("pyseer_pvalue"):
-            stats.append("p=" + row.get("pyseer_pvalue"))
-        if row.get("odds_ratio"):
-            stats.append("OR=" + row.get("odds_ratio"))
         if stats:
             cards.append(f"<div class=\"top-stats\">{safe_text(' | '.join(stats))}</div>")
         cards.append("</div>")
     cards.append("</div>")
-    if len(rows) > n:
-        cards.append(f"<p class=\"note\">Showing first {n} cards; the table below includes all {len(rows)} prioritized hits loaded from the top-hit file.</p>")
-    else:
-        cards.append(f"<p class=\"note\">Showing all {len(rows)} prioritized hits as cards.</p>")
     return "\n".join(cards)
+
+
+def legend_table_html():
+    return f"""
+<div class=\"table-wrap\"><table>
+<thead><tr><th>Class</th><th>Pyseer coding</th><th>Metadata column</th><th>Metadata value used for display</th><th>Samples</th><th>Report label</th></tr></thead>
+<tbody>
+<tr><td>case</td><td>1</td><td>{safe_text(legend['metadata_column'] or 'not provided')}</td><td>{safe_text(legend['case_detail'] or 'case')}</td><td>{safe_text(legend['case_n'])}</td><td><strong>{safe_text(case_label)}</strong></td></tr>
+<tr><td>control</td><td>0</td><td>{safe_text(legend['metadata_column'] or 'not provided')}</td><td>{safe_text(legend['control_detail'] or 'control')}</td><td>{safe_text(legend['control_n'])}</td><td><strong>{safe_text(control_label)}</strong></td></tr>
+</tbody></table></div>
+"""
 
 
 def confidence_table_html():
@@ -3059,141 +3524,139 @@ def confidence_table_html():
         ("high", ">=95% identity and >=90% coverage, or exact qualifier-level support", "Strong reference-supported annotation"),
         ("medium", ">=85% identity and >=70% coverage", "Plausible annotation; inspect manually"),
         ("low", ">=60% identity and >=50% coverage, or weak/partial support", "Tentative annotation only"),
-        ("none", "No usable GenBank match", "Report the Panaroo/Prokka cluster label")
+        ("none", "No usable GenBank match", "Keep the pangenome/SNP marker identifier")
     ]
     out = ["<div class=\"table-wrap\"><table><thead><tr><th>Confidence</th><th>Rule</th><th>Interpretation</th></tr></thead><tbody>"]
     for conf, rule, interp in rows:
-        out.append(f"<tr><td><span class=\"conf {confidence_badge_class(conf)}\">{conf}</span></td><td>{safe_text(rule)}</td><td>{safe_text(interp)}</td></tr>")
+        out.append(f"<tr><td><span class=\"conf {confidence_badge_class(conf)}\">{safe_text(conf)}</span></td><td>{safe_text(rule)}</td><td>{safe_text(interp)}</td></tr>")
     out.append("</tbody></table></div>")
-    return "".join(out)
+    return "\n".join(out)
 
 phenotype_rows = read_tsv("~{phenotype_tsv}")
-cases = controls = 0
-for row in phenotype_rows[1:]:
-    if len(row) >= 2:
-        try:
-            val = int(float(row[1]))
-            cases += 1 if val == 1 else 0
-            controls += 1 if val == 0 else 0
-        except Exception:
-            pass
-total = cases + controls
+phenotype_tested = phenotype_rows[0][1] if phenotype_rows and len(phenotype_rows[0]) > 1 else "case_control"
+cases = sum(1 for r in phenotype_rows[1:] if len(r) > 1 and str(r[1]).strip() == "1")
+controls = sum(1 for r in phenotype_rows[1:] if len(r) > 1 and str(r[1]).strip() == "0")
+total = max(0, len(phenotype_rows) - 1)
 
-header, top_rows = read_tsv_dicts("~{top_priority_hits}")
-top_row = top_rows[0] if top_rows else {}
-feature_id = top_row.get("feature_id", "NA")
-display_name = compute_display_name(top_row) if top_row else "NA"
-display_subtitle = display_label(top_row) if top_row else "No top hit available"
-gene_name = top_row.get("gene_name", "")
-product = top_row.get("reference_product", "") or top_row.get("product", "")
-enriched_in = top_row.get("enriched_in", "")
-pvalue = top_row.get("pyseer_pvalue", "")
-odds_ratio = top_row.get("odds_ratio", "")
-priority_score = top_row.get("priority_score", "")
-case_frequency = top_row.get("case_frequency", "")
-control_frequency = top_row.get("control_frequency", "")
-reference_locus_tag = top_row.get("reference_locus_tag", "")
-reference_gene = top_row.get("reference_gene", "")
-reference_product = top_row.get("reference_product", "")
-annotation_confidence = top_row.get("annotation_confidence", "")
-reference_identity = top_row.get("reference_identity", "")
-reference_coverage = top_row.get("reference_coverage", "")
-interpretation_note = top_row.get("interpretation_note", "") or confidence_rule(annotation_confidence)
+top_header, top_rows = read_tsv_dicts("~{top_priority_hits}")
+snp_top_header, snp_top_rows = read_tsv_dicts("~{snp_top_hits}")
+first = top_rows[0] if top_rows else {}
+display_name = compute_display_name(first) if first else "No significant gene hit"
+display_subtitle = display_label(first) if first else "No significant gene hit at selected threshold"
+feature_id = first.get("feature_id", "NA") if first else "NA"
+reference_locus_tag = first.get("reference_locus_tag", "") if first else ""
+reference_gene = first.get("reference_gene", "") if first else ""
+annotation_confidence = first.get("annotation_confidence", "none") if first else "none"
+reference_identity = first.get("reference_identity", "") if first else ""
+reference_coverage = first.get("reference_coverage", "") if first else ""
+reference_product = first.get("reference_product", "") if first else ""
+product = first.get("product", "") if first else ""
+interpretation_note = first.get("interpretation_note", "") or first.get("annotation_note", "") or "Displayed from available pangenome/reference annotation; inspect manually."
 
-validation_txt = read_text("~{validation_report}")
+validation_txt = replace_group_terms_text(read_text("~{validation_report}"))
 panaroo_txt = read_text("~{panaroo_summary}")
 annotation_summary_txt = read_text("~{reference_annotation_summary}")
 plot_summary_txt = read_text("~{plot_summary}")
-population_structure_summary_txt = read_text("~{population_structure_summary}")
-population_pca_svg = read_svg("~{population_pca_svg}")
-kinship_heatmap_svg = read_svg("~{kinship_heatmap_svg}")
-pyseer_n = tsv_count("~{pyseer_gene_assoc}")
-snp_pyseer_n = tsv_count("~{pyseer_snp_assoc}")
-qq_svg = read_svg("~{qq_plot_svg}")
-manhattan_svg = read_svg("~{manhattan_plot_svg}")
-snp_qq_svg = read_svg("~{snp_qq_plot_svg}")
-snp_manhattan_svg = read_svg("~{snp_manhattan_plot_svg}")
+population_structure_summary_txt = replace_group_terms_text(read_text("~{population_structure_summary}"))
 snp_summary_txt = read_text("~{snp_summary}")
 snp_plot_summary_txt = read_text("~{snp_plot_summary}")
-snp_header, snp_top_rows = read_tsv_dicts("~{snp_top_hits}")
-snp_status = "enabled" if do_snp_gwas else "not run"
-phenotype_tested = phenotype_rows[0][1] if phenotype_rows and len(phenotype_rows[0]) > 1 else "case_control"
-snp_section = f"""<div class=\"card\" id=\"snp\"><h2><span>05</span> SNP-based GWAS branch</h2><div class=\"callout\"><strong>Status:</strong> SNP GWAS is {safe_text(snp_status)}. This branch performs reference mapping, SNP calling, pyseer SNP association testing, coordinate-level GenBank annotation, odds ratios, and 95% confidence intervals for binary outcomes. The plots below are generated for SNP markers when SNP-GWAS is enabled; points reaching the significance threshold are highlighted. This is especially important for mutation-mediated phenotypes such as MTBC drug resistance.</div><div class=\"plot-grid\"><div class=\"plot\">{snp_manhattan_svg}</div><div class=\"plot\">{snp_qq_svg}</div></div><h3>Top SNP hits</h3>{table_from_tsv('~{snp_top_hits}', max_rows=100, reorder=True)}<h3>All significant SNP hits</h3>{table_from_tsv('~{snp_all_significant_hits}', max_rows=100, reorder=True)}<h3>SNP GWAS summary</h3><pre>{safe_text(snp_summary_txt)}</pre><h3>SNP plot summary</h3><pre>{safe_text(snp_plot_summary_txt)}</pre></div>"""
+gubbins_summary_txt = read_text("~{gubbins_summary}")
+gubbins_status_value = summary_value("~{gubbins_summary}", "gubbins_status", "not_run")
+gubbins_filtering_note = summary_value("~{gubbins_summary}", "filtering_note", "Gubbins not run.")
+gubbins_recommendation = summary_value("~{gubbins_summary}", "recommendation", "Optional recombination assessment for SNP GWAS.")
+gubbins_usage_note = summary_value("~{gubbins_summary}", "usage_note", "")
+gubbins_recombination_intervals = summary_value("~{gubbins_summary}", "recombination_intervals", "0")
+gubbins_input_snp_records = summary_value("~{gubbins_summary}", "input_snp_records", "0")
+gubbins_filtered_snp_records = summary_value("~{gubbins_summary}", "filtered_snp_records", "0")
+
+manhattan_svg = read_svg("~{manhattan_plot_svg}")
+qq_svg = read_svg("~{qq_plot_svg}")
+population_pca_svg = read_svg("~{population_pca_svg}")
+kinship_heatmap_svg = read_svg("~{kinship_heatmap_svg}")
+snp_manhattan_svg = read_svg("~{snp_manhattan_plot_svg}")
+snp_qq_svg = read_svg("~{snp_qq_plot_svg}")
+
+pyseer_n = tsv_count("~{pyseer_gene_assoc}")
+snp_pyseer_n = tsv_count("~{pyseer_snp_assoc}")
+snp_status = "run" if do_snp_gwas else "not run"
+gubbins_status = "requested" if (do_snp_gwas and do_gubbins) else "not requested"
+gubbins_effective = gubbins_status_value.replace("_", " ")
 generated = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
-small_sample_note = ""
-if total and total < 100:
-    small_sample_note = "<div class=\"callout\"><strong>Smoke-test/sample-size note:</strong> This run has " + str(total) + " samples (" + str(cases) + " cases and " + str(controls) + " controls). It is useful for workflow validation, but association results should not be treated as final biological or clinical findings without larger cohorts and independent validation.</div>"
+snp_section = f"""
+<div class=\"card\" id=\"snp\"><h2><span>06</span> SNP marker GWAS</h2>
+<div class=\"callout\"><strong>SNP branch:</strong> {safe_text(snp_status)}. SNP marker GWAS is intended for mutation-mediated phenotypes, including MTBC drug-resistance traits. Review {safe_text(case_label)}/{safe_text(control_label)} population structure before interpreting SNP hits. Optional Gubbins status: <strong>{safe_text(gubbins_effective)}</strong>.</div>
+<div class=\"plot-grid\"><div class=\"plot\">{snp_manhattan_svg}</div><div class=\"plot\">{snp_qq_svg}</div></div>
+<pre>{safe_text(snp_plot_summary_txt)}</pre>
+<h3>Top priority SNP marker hits</h3>{top_cards(snp_top_rows, 5, 'SNP rank')}
+<h3>SNP hit table</h3>{table_from_tsv('~{snp_top_hits}', max_rows=100, reorder=True)}
+<pre>{safe_text(snp_summary_txt)}</pre></div>
+"""
 
-html_doc = f"""<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{safe_text(prefix)} | rMAP-GWAS report</title><style>
-:root {{ --panel: rgba(13,22,48,0.82); --line: rgba(96,210,255,0.25); --cyan: #21d4fd; --violet: #a855f7; --pink: #ff4fd8; --green: #55efc4; --amber: #ffd166; --red: #ff6b6b; --text: #eef6ff; --muted: #a9bad7; }}
-* {{ box-sizing: border-box; }} html {{ scroll-behavior: smooth; }} body {{ margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; color: var(--text); background: radial-gradient(circle at 18% 10%, rgba(33,212,253,0.28), transparent 28%), radial-gradient(circle at 76% 8%, rgba(168,85,247,0.32), transparent 28%), radial-gradient(circle at 92% 55%, rgba(255,79,216,0.22), transparent 30%), linear-gradient(135deg, #050717 0%, #080d22 40%, #120923 100%); }}
-body:before {{ content: \"\"; position: fixed; inset: 0; pointer-events: none; background-image: linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px); background-size: 42px 42px; mask-image: radial-gradient(circle at center, black, transparent 82%); }}
-.page {{ max-width: 1480px; margin: 0 auto; padding: 34px 28px 80px; }} .hero {{ position: relative; overflow: hidden; border: 1px solid rgba(81,209,255,0.30); border-radius: 28px; padding: 38px; background: linear-gradient(135deg, rgba(11,22,50,0.92), rgba(14,13,45,0.88)); box-shadow: 0 0 70px rgba(33,212,253,0.10), inset 0 0 60px rgba(255,255,255,0.035); }}
-.kicker {{ display: inline-flex; align-items: center; gap: 9px; color: var(--green); letter-spacing: .14em; text-transform: uppercase; font-size: 13px; font-weight: 800; }} .kicker:before {{ content: \"\"; width: 10px; height: 10px; border-radius: 50%; background: var(--green); box-shadow: 0 0 18px var(--green); }}
-.hero h1 {{ margin: 14px 0 8px; font-size: clamp(48px, 8vw, 108px); line-height: .9; letter-spacing: -0.065em; }} .gradient-text {{ background: linear-gradient(90deg, var(--cyan), #7dd3fc 32%, var(--violet) 62%, var(--pink)); -webkit-background-clip: text; background-clip: text; color: transparent; }} .subtitle {{ max-width: 900px; color: #dcecff; font-size: clamp(18px, 2.1vw, 28px); line-height: 1.35; margin: 0 0 26px; }}
-.hero-grid {{ display: grid; grid-template-columns: 1fr 420px; gap: 28px; align-items: stretch; position: relative; z-index: 2; }} @media (max-width: 1050px) {{ .hero-grid {{ grid-template-columns: 1fr; }} }}
-.badges {{ display: flex; flex-wrap: wrap; gap: 12px; margin-top: 22px; }} .badge {{ border: 1px solid rgba(33,212,253,0.32); background: rgba(7,18,42,0.68); border-radius: 999px; padding: 10px 14px; color: #dff8ff; font-weight: 700; }}
-.metrics {{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; }} .metric {{ border: 1px solid rgba(255,255,255,0.12); border-radius: 20px; padding: 20px; background: rgba(7,12,31,0.68); }} .metric .num {{ font-size: 42px; font-weight: 900; letter-spacing: -0.05em; }} .metric .num.smalltop {{ font-size: 23px; letter-spacing: -0.02em; line-height: 1.05; }} .metric .label {{ color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .08em; font-weight: 800; }} .metric .sub {{ color: var(--muted); font-size: 12px; line-height: 1.35; margin-top: 8px; }}
-.nav {{ display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 0; }} .nav a {{ text-decoration: none; color: #dff7ff; font-weight: 800; font-size: 13px; padding: 10px 13px; border-radius: 12px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.09); }}
-.grid {{ display: grid; grid-template-columns: repeat(12,1fr); gap: 20px; margin-top: 22px; }} .card {{ grid-column: span 12; border: 1px solid var(--line); background: var(--panel); border-radius: 24px; padding: 24px; box-shadow: 0 18px 60px rgba(0,0,0,0.25), inset 0 0 30px rgba(255,255,255,0.025); }} .card.half {{ grid-column: span 6; }} @media (max-width: 980px) {{ .card.half {{ grid-column: span 12; }} }}
-.card h2 {{ margin: 0 0 16px; font-size: 24px; letter-spacing: -0.02em; }} .card h2 span {{ color: var(--cyan); text-shadow: 0 0 18px rgba(33,212,253,0.45); }} .pipeline {{ display: grid; grid-template-columns: repeat(6,1fr); gap: 14px; }} @media (max-width: 1180px) {{ .pipeline {{ grid-template-columns: repeat(3,1fr); }} }} @media (max-width: 720px) {{ .pipeline {{ grid-template-columns: 1fr; }} }}
-.step {{ min-height: 160px; padding: 18px; border-radius: 20px; border: 1px solid rgba(33,212,253,0.22); background: linear-gradient(180deg, rgba(25,38,80,.70), rgba(8,12,31,.72)); }} .step .idx {{ color: var(--green); font-weight: 900; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; }} .step .title {{ font-size: 18px; font-weight: 900; margin: 8px 0; color: #fff; }} .step p {{ margin: 0; color: var(--muted); font-size: 14px; line-height: 1.45; }} .icon {{ width: 46px; height: 46px; display: grid; place-items: center; border-radius: 15px; background: rgba(33,212,253,0.12); border: 1px solid rgba(33,212,253,0.30); color: var(--cyan); font-size: 20px; font-weight: 900; margin-bottom: 12px; }}
-.callout {{ border-left: 5px solid var(--amber); background: rgba(255,209,102,0.10); padding: 16px 18px; border-radius: 14px; color: #fff7dc; margin: 16px 0; }} pre {{ white-space: pre-wrap; background: rgba(3,7,18,0.66); border: 1px solid rgba(148,163,184,0.20); color: #dbeafe; border-radius: 18px; padding: 18px; overflow: auto; }} .table-wrap {{ width: 100%; overflow: auto; border-radius: 18px; border: 1px solid rgba(148,163,184,.22); }} table {{ border-collapse: collapse; width: 100%; min-width: 980px; background: rgba(6,12,30,0.74); font-size: 13px; }} th, td {{ border-bottom: 1px solid rgba(148,163,184,.18); padding: 12px 14px; text-align: left; vertical-align: top; }} th {{ position: sticky; top: 0; background: rgba(16,42,77,.98); color: #e0f2fe; text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }} td {{ color: #e5eefb; }} tbody tr:hover {{ background: rgba(33,212,253,.06); }}
-.hit-card {{ display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr; gap: 14px; }} @media (max-width: 900px) {{ .hit-card {{ grid-template-columns: 1fr; }} }} .hit-box {{ border-radius: 18px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.055); padding: 16px; }} .hit-box .small {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; font-weight: 800; }} .hit-box .big {{ font-size: 22px; font-weight: 900; margin-top: 6px; color: #fff; word-break: break-word; }}
-.top-grid {{ display: grid; grid-template-columns: repeat(5, minmax(180px, 1fr)); gap: 14px; margin-bottom: 12px; }} @media (max-width: 1180px) {{ .top-grid {{ grid-template-columns: repeat(2, 1fr); }} }} @media (max-width: 720px) {{ .top-grid {{ grid-template-columns: 1fr; }} }} .top-card {{ border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.055); border-radius: 18px; padding: 16px; }} .top-rank {{ color: var(--green); font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: .08em; }} .top-name {{ font-size: 20px; font-weight: 900; line-height: 1.05; margin: 8px 0; word-break: break-word; }} .top-label, .top-stats {{ color: var(--muted); font-size: 12px; line-height: 1.35; }} .top-card p {{ color: #dbeafe; font-size: 13px; line-height: 1.35; }}
-.conf {{ display: inline-block; padding: 5px 9px; border-radius: 999px; font-weight: 900; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }} .conf-high {{ background: rgba(85,239,196,.16); color: #b7fff0; border: 1px solid rgba(85,239,196,.45); }} .conf-medium {{ background: rgba(255,209,102,.16); color: #fff0b8; border: 1px solid rgba(255,209,102,.45); }} .conf-low {{ background: rgba(255,122,182,.16); color: #ffd0e7; border: 1px solid rgba(255,122,182,.45); }} .conf-none {{ background: rgba(148,163,184,.16); color: #dbeafe; border: 1px solid rgba(148,163,184,.35); }}
-.plot-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }} @media (max-width: 1000px) {{ .plot-grid {{ grid-template-columns: 1fr; }} }} .plot svg {{ width: 100%; height: auto; border-radius: 18px; border: 1px solid rgba(148,163,184,.18); }} .empty, .note {{ color: var(--muted); }} .footer {{ margin-top: 26px; color: var(--muted); text-align: center; font-size: 13px; }}
-</style></head><body><div class=\"page\"><section class=\"hero\"><div class=\"hero-grid\"><div><div class=\"kicker\">Cromwell workflow report</div><h1><span class=\"gradient-text\">rMAP-GWAS</span></h1><p class=\"subtitle\">Reproducible microbial GWAS from paired-end reads, including gene presence/absence GWAS, optional SNP GWAS, population-structure visualization, post-GWAS reference annotation, and ranked association reporting.</p><div class=\"badges\"><span class=\"badge\">Cromwell</span><span class=\"badge\">Dockerized</span><span class=\"badge\">Distance-corrected pyseer</span><span class=\"badge\">Multi-pathogen ready</span><span class=\"badge\">GenBank annotation rescue</span><span class=\"badge\">Optional SNP GWAS</span></div><nav class=\"nav\"><a href=\"#pipeline\">Pipeline</a><a href=\"#structure\">Population structure</a><a href=\"#plots\">Gene plots</a><a href=\"#snp\">SNP GWAS</a><a href=\"#hits\">Priority hits</a><a href=\"#annotation\">Reference annotation</a><a href=\"#validation\">Validation</a><a href=\"#outputs\">Outputs</a></nav>{small_sample_note}</div><div class=\"metrics\"><div class=\"metric\"><div class=\"label\">Cases</div><div class=\"num\">{cases}</div></div><div class=\"metric\"><div class=\"label\">Controls</div><div class=\"num\">{controls}</div></div><div class=\"metric\"><div class=\"label\">Total samples</div><div class=\"num\">{total}</div></div><div class=\"metric\"><div class=\"label\">Top hit</div><div class=\"num smalltop\">{safe_text(display_name)}</div><div class=\"sub\">{safe_text(display_subtitle)}</div></div></div></div></section><section class=\"grid\">
-<div class=\"card\" id=\"pipeline\"><h2><span>01</span> Workflow architecture</h2><div class=\"pipeline\"><div class=\"step\"><div class=\"icon\">01</div><div class=\"idx\">Input</div><div class=\"title\">Sample-set validation</div><p>Checks sample names, paired FASTQs, group labels, and case/control balance.</p></div><div class=\"step\"><div class=\"icon\">02</div><div class=\"idx\">QC</div><div class=\"title\">fastp trimming</div><p>Generates cleaned reads plus QC summaries.</p></div><div class=\"step\"><div class=\"icon\">03</div><div class=\"idx\">Assembly</div><div class=\"title\">Shovill</div><p>Builds de novo genome assemblies using safe Cromwell memory handling.</p></div><div class=\"step\"><div class=\"icon\">04</div><div class=\"idx\">Annotation</div><div class=\"title\">Prokka + Panaroo</div><p>Creates GFF annotations and pangenome gene matrices.</p></div><div class=\"step\"><div class=\"icon\">05</div><div class=\"idx\">GWAS</div><div class=\"title\">Mash + pyseer</div><p>Runs population-structure-aware gene association testing.</p></div><div class=\"step\"><div class=\"icon\">06</div><div class=\"idx\">Rescue</div><div class=\"title\">GenBank annotation</div><p>Maps prioritized Panaroo clusters to reference GenBank CDS features where possible.</p></div></div></div>
-<div class=\"card half\"><h2><span>02</span> Run configuration</h2><div class=\"hit-card\"><div class=\"hit-box\"><div class=\"small\">Reference name</div><div class=\"big\">{safe_text(reference_name)}</div></div><div class=\"hit-box\"><div class=\"small\">Species</div><div class=\"big\">{safe_text(reference_species)}</div></div><div class=\"hit-box\"><div class=\"small\">Reference Docker</div><div class=\"big\">{safe_text(reference_docker)}</div></div><div class=\"hit-box\"><div class=\"small\">Generated UTC</div><div class=\"big\">{safe_text(generated)}</div></div></div><div class=\"callout\"><strong>Phenotype tested:</strong> Binary phenotype <code>{safe_text(phenotype_tested)}</code>, coded as cases=1 and controls=0. GWAS mode: {safe_text(gwas_mode)}; SNP branch: {safe_text(snp_status)}; container backend recorded as {safe_text(container_backend)}.</div></div>
-<div class=\"card half\"><h2><span>03</span> Top-hit GenBank annotation rescue</h2><div class=\"hit-card\"><div class=\"hit-box\"><div class=\"small\">Display name</div><div class=\"big\">{safe_text(display_name)}</div></div><div class=\"hit-box\"><div class=\"small\">Panaroo cluster</div><div class=\"big\">{safe_text(feature_id)}</div></div><div class=\"hit-box\"><div class=\"small\">Reference locus / gene</div><div class=\"big\">{safe_text((reference_locus_tag or 'not matched') + ' / ' + (reference_gene or 'not assigned'))}</div></div><div class=\"hit-box\"><div class=\"small\">Confidence</div><div class=\"big\"><span class=\"conf {confidence_badge_class(annotation_confidence)}\">{safe_text(annotation_confidence or 'none')}</span></div></div></div><div class=\"callout\"><strong>Top-hit interpretation:</strong> {safe_text(interpretation_note)} Reference identity: {safe_text(reference_identity or 'NA')}%; reference coverage: {safe_text(reference_coverage or 'NA')}%. Product: {safe_text(reference_product or product or 'not assigned')}.</div></div>
-<div class=\"card\" id=\"structure\"><h2><span>04</span> Population structure</h2><div class=\"callout\"><strong>Interpretation check:</strong> Review case/control clustering before interpreting top hits. Strong phenotype-lineage clustering can indicate lineage-associated markers rather than causal phenotype-associated variation.</div><div class=\"plot-grid\"><div class=\"plot\">{population_pca_svg}</div><div class=\"plot\">{kinship_heatmap_svg}</div></div><pre>{safe_text(population_structure_summary_txt)}</pre></div>
-<div class=\"card\" id=\"plots\"><h2><span>05</span> Gene presence/absence GWAS plots</h2><div class=\"callout\"><strong>Plot note:</strong> The gene association plot is a feature-index GWAS plot, not a full reference-coordinate Manhattan plot. A coordinate-level Manhattan plot requires robust mapping of each Panaroo cluster to a reference genomic coordinate.</div><div class=\"plot-grid\"><div class=\"plot\">{manhattan_svg}</div><div class=\"plot\">{qq_svg}</div></div><pre>{safe_text(plot_summary_txt)}</pre></div>
+gubbins_section = f"""
+<div class=\"card\" id=\"gubbins\"><h2><span>06b</span> Optional Gubbins recombination assessment</h2>
+<div class=\"callout\"><strong>Recommendation:</strong> Gubbins is optional and is most useful for recombining bacterial species or datasets where recombinant blocks may inflate SNP associations. It is especially relevant for organisms such as <em>Klebsiella pneumoniae</em>, <em>Escherichia coli</em>, <em>Salmonella</em>, <em>Streptococcus pneumoniae</em>, <em>Neisseria</em> spp., and selected <em>Acinetobacter</em> datasets. For MTBC and other highly clonal organisms, keep it off by default unless there is a specific recombination or lineage-confounding question.</div>
+<div class=\"hit-card\"><div class=\"hit-box\"><div class=\"small\">Requested</div><div class=\"big\">{safe_text(gubbins_status)}</div></div><div class=\"hit-box\"><div class=\"small\">Run status</div><div class=\"big\">{safe_text(gubbins_effective)}</div></div><div class=\"hit-box\"><div class=\"small\">Input SNP records</div><div class=\"big\">{safe_text(gubbins_input_snp_records)}</div></div><div class=\"hit-box\"><div class=\"small\">Filtered SNP records</div><div class=\"big\">{safe_text(gubbins_filtered_snp_records)}</div></div></div>
+<div class=\"callout\"><strong>Filtering note:</strong> {safe_text(gubbins_filtering_note)} When Gubbins is enabled and succeeds, SNP GWAS uses the Gubbins-filtered VCF. When it is skipped, unavailable, or fails softly, the original Snippy SNP VCF is used and the reason is recorded below.</div>
+<p class=\"note\"><strong>Recombination intervals:</strong> {safe_text(gubbins_recombination_intervals)}. <strong>Output files:</strong> {safe_text(Path('~{gubbins_summary}').name)}, {safe_text(Path('~{gubbins_filtered_alignment}').name)}, {safe_text(Path('~{gubbins_recombination_gff}').name)}, and {safe_text(Path('~{gubbins_log}').name)}.</p>
+<pre>{safe_text(gubbins_summary_txt)}</pre>
+</div>
+"""
+
+css = """
+:root { --panel: rgba(13,22,48,0.82); --line: rgba(96,210,255,0.25); --cyan: #21d4fd; --violet: #a855f7; --pink: #ff4fd8; --green: #55efc4; --amber: #ffd166; --red: #ff6b6b; --text: #eef6ff; --muted: #a9bad7; }
+* { box-sizing: border-box; } html { scroll-behavior: smooth; } body { margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--text); background: radial-gradient(circle at 18% 10%, rgba(33,212,253,0.28), transparent 28%), radial-gradient(circle at 76% 8%, rgba(168,85,247,0.32), transparent 28%), radial-gradient(circle at 92% 55%, rgba(255,79,216,0.22), transparent 30%), linear-gradient(135deg, #050717 0%, #080d22 40%, #120923 100%); }
+.page { max-width: 1480px; margin: 0 auto; padding: 34px 28px 80px; } .hero { position: relative; overflow: hidden; border: 1px solid rgba(81,209,255,0.30); border-radius: 28px; padding: 38px; background: linear-gradient(135deg, rgba(11,22,50,0.92), rgba(14,13,45,0.88)); box-shadow: 0 0 70px rgba(33,212,253,0.10), inset 0 0 60px rgba(255,255,255,0.035); }
+.kicker { color: var(--green); letter-spacing: .14em; text-transform: uppercase; font-size: 13px; font-weight: 800; } .hero h1 { margin: 14px 0 8px; font-size: clamp(48px, 8vw, 108px); line-height: .9; letter-spacing: -0.065em; } .gradient-text { background: linear-gradient(90deg, var(--cyan), #7dd3fc 32%, var(--violet) 62%, var(--pink)); -webkit-background-clip: text; background-clip: text; color: transparent; } .subtitle { max-width: 900px; color: #dcecff; font-size: clamp(18px, 2.1vw, 28px); line-height: 1.35; margin: 0 0 26px; }
+.hero-grid { display: grid; grid-template-columns: 1fr 420px; gap: 28px; align-items: stretch; } @media (max-width: 1050px) { .hero-grid { grid-template-columns: 1fr; } }
+.badges { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 22px; } .badge { border: 1px solid rgba(33,212,253,0.32); background: rgba(7,18,42,0.68); border-radius: 999px; padding: 10px 14px; color: #dff8ff; font-weight: 700; }
+.metrics { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; } .metric { border: 1px solid rgba(255,255,255,0.12); border-radius: 20px; padding: 20px; background: rgba(7,12,31,0.68); } .metric .num { font-size: 42px; font-weight: 900; letter-spacing: -0.05em; } .metric .num.smalltop { font-size: 23px; letter-spacing: -0.02em; line-height: 1.05; } .metric .label { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .08em; font-weight: 800; } .metric .sub { color: var(--muted); font-size: 12px; line-height: 1.35; margin-top: 8px; }
+.nav { display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 0; } .nav a { text-decoration: none; color: #dff7ff; font-weight: 800; font-size: 13px; padding: 10px 13px; border-radius: 12px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.09); }
+.grid { display: grid; grid-template-columns: repeat(12,1fr); gap: 20px; margin-top: 22px; } .card { grid-column: span 12; border: 1px solid var(--line); background: var(--panel); border-radius: 24px; padding: 24px; box-shadow: 0 18px 60px rgba(0,0,0,0.25), inset 0 0 30px rgba(255,255,255,0.025); } .card.half { grid-column: span 6; } @media (max-width: 980px) { .card.half { grid-column: span 12; } }
+.card h2 { margin: 0 0 16px; font-size: 24px; letter-spacing: -0.02em; } .card h2 span { color: var(--cyan); text-shadow: 0 0 18px rgba(33,212,253,0.45); } .pipeline { display: grid; grid-template-columns: repeat(6,1fr); gap: 14px; } @media (max-width: 1180px) { .pipeline { grid-template-columns: repeat(3,1fr); } } @media (max-width: 720px) { .pipeline { grid-template-columns: 1fr; } }
+.step { min-height: 140px; padding: 18px; border-radius: 20px; border: 1px solid rgba(33,212,253,0.22); background: linear-gradient(180deg, rgba(25,38,80,.70), rgba(8,12,31,.72)); } .step .idx { color: var(--green); font-weight: 900; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; } .step .title { font-size: 18px; font-weight: 900; margin: 8px 0; color: #fff; } .step p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.45; } .icon { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 15px; background: rgba(33,212,253,0.12); border: 1px solid rgba(33,212,253,0.30); color: var(--cyan); font-size: 20px; font-weight: 900; margin-bottom: 12px; }
+.callout { border-left: 5px solid var(--amber); background: rgba(255,209,102,0.10); padding: 16px 18px; border-radius: 14px; color: #fff7dc; margin: 16px 0; } pre { white-space: pre-wrap; background: rgba(3,7,18,0.66); border: 1px solid rgba(148,163,184,0.20); color: #dbeafe; border-radius: 18px; padding: 18px; overflow: auto; } .table-wrap { width: 100%; overflow: auto; border-radius: 18px; border: 1px solid rgba(148,163,184,.22); } table { border-collapse: collapse; width: 100%; min-width: 980px; background: rgba(6,12,30,0.74); font-size: 13px; } th, td { border-bottom: 1px solid rgba(148,163,184,.18); padding: 12px 14px; text-align: left; vertical-align: top; } th { position: sticky; top: 0; background: rgba(16,42,77,.98); color: #e0f2fe; text-transform: uppercase; letter-spacing: .06em; font-size: 11px; } td { color: #e5eefb; } tbody tr:hover { background: rgba(33,212,253,.06); }
+.hit-card { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr; gap: 14px; } @media (max-width: 900px) { .hit-card { grid-template-columns: 1fr; } } .hit-box { border-radius: 18px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.055); padding: 16px; } .hit-box .small { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; font-weight: 800; } .hit-box .big { font-size: 22px; font-weight: 900; margin-top: 6px; color: #fff; word-break: break-word; }
+.top-grid { display: grid; grid-template-columns: repeat(5, minmax(180px, 1fr)); gap: 14px; margin-bottom: 12px; } @media (max-width: 1180px) { .top-grid { grid-template-columns: repeat(2, 1fr); } } @media (max-width: 720px) { .top-grid { grid-template-columns: 1fr; } } .top-card { border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.055); border-radius: 18px; padding: 16px; } .top-rank { color: var(--green); font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: .08em; } .top-name { font-size: 20px; font-weight: 900; line-height: 1.05; margin: 8px 0; word-break: break-word; } .top-label, .top-stats { color: var(--muted); font-size: 12px; line-height: 1.35; } .top-card p { color: #dbeafe; font-size: 13px; line-height: 1.35; }
+.conf { display: inline-block; padding: 5px 9px; border-radius: 999px; font-weight: 900; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; } .conf-high { background: rgba(85,239,196,.16); color: #b7fff0; border: 1px solid rgba(85,239,196,.45); } .conf-medium { background: rgba(255,209,102,.16); color: #fff0b8; border: 1px solid rgba(255,209,102,.45); } .conf-low { background: rgba(255,122,182,.16); color: #ffd0e7; border: 1px solid rgba(255,122,182,.45); } .conf-none { background: rgba(148,163,184,.16); color: #dbeafe; border: 1px solid rgba(148,163,184,.35); }
+.plot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; } @media (max-width: 1000px) { .plot-grid { grid-template-columns: 1fr; } } .plot svg { width: 100%; height: auto; border-radius: 18px; border: 1px solid rgba(148,163,184,.18); } .empty, .note { color: var(--muted); } .footer { margin-top: 26px; color: var(--muted); text-align: center; font-size: 13px; }
+"""
+
+html_doc = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{safe_text(prefix)} | rMAP-GWAS report</title><style>{css}</style></head><body><div class="page"><section class="hero"><div class="hero-grid"><div><div class="kicker">Cromwell workflow report</div><h1><span class="gradient-text">rMAP-GWAS</span></h1><p class="subtitle">Reproducible microbial GWAS from paired-end reads, including gene presence/absence GWAS, optional SNP marker GWAS, population-structure visualization, post-GWAS reference annotation, and ranked association reporting.</p><div class="badges"><span class="badge">Cromwell</span><span class="badge">Dockerized</span><span class="badge">Distance-corrected pyseer</span><span class="badge">Multi-pathogen ready</span><span class="badge">GenBank annotation rescue</span><span class="badge">Optional SNP GWAS</span></div><nav class="nav"><a href="#phenotype">Phenotype legend</a><a href="#pipeline">Pipeline</a><a href="#structure">Population structure</a><a href="#plots">Gene plots</a><a href="#snp">SNP GWAS</a><a href="#gubbins">Recombination</a><a href="#hits">Priority hits</a><a href="#annotation">Reference annotation</a><a href="#validation">Validation</a><a href="#outputs">Outputs</a></nav><div class="callout"><strong>Smoke-test/sample-size note:</strong> This run has {total} samples ({cases} {safe_text(cases_label)} and {controls} {safe_text(controls_label)}). It is useful for workflow validation, but association results should not be treated as final biological or clinical findings without larger cohorts and independent validation.</div></div><div class="metrics"><div class="metric"><div class="label">{safe_text(cases_label)}</div><div class="num">{cases}</div></div><div class="metric"><div class="label">{safe_text(controls_label)}</div><div class="num">{controls}</div></div><div class="metric"><div class="label">Total samples</div><div class="num">{total}</div></div><div class="metric"><div class="label">Top gene hit</div><div class="num smalltop">{safe_text(display_name)}</div><div class="sub">{safe_text(display_subtitle)}</div></div></div></div></section><section class="grid">
+<div class="card" id="phenotype"><h2><span>01</span> Phenotype legend and coding</h2><div class="callout"><strong>Phenotype tested:</strong> Binary phenotype <code>{safe_text(phenotype_tested)}</code>. The report displays the metadata-derived biological contrast throughout the HTML: <strong>{safe_text(case_label)} = 1</strong> and <strong>{safe_text(control_label)} = 0</strong>.</div>{legend_table_html()}</div>
+<div class="card" id="pipeline"><h2><span>02</span> Workflow architecture</h2><div class="pipeline"><div class="step"><div class="icon">01</div><div class="idx">Input</div><div class="title">Sample-set validation</div><p>Checks sample names, paired FASTQs, group labels, and {safe_text(case_label)}/{safe_text(control_label)} balance.</p></div><div class="step"><div class="icon">02</div><div class="idx">QC</div><div class="title">fastp trimming</div><p>Generates cleaned reads plus QC summaries.</p></div><div class="step"><div class="icon">03</div><div class="idx">Assembly</div><div class="title">Shovill</div><p>Builds de novo genome assemblies using safe Cromwell memory handling.</p></div><div class="step"><div class="icon">04</div><div class="idx">Annotation</div><div class="title">Prokka + Panaroo</div><p>Creates GFF annotations and pangenome gene matrices.</p></div><div class="step"><div class="icon">05</div><div class="idx">GWAS</div><div class="title">Mash + pyseer</div><p>Runs population-structure-aware gene and optional SNP association testing.</p></div><div class="step"><div class="icon">06</div><div class="idx">Rescue</div><div class="title">GenBank annotation</div><p>Maps prioritized pangenome/SNP markers to reference GenBank features where possible.</p></div></div></div>
+<div class="card half"><h2><span>03</span> Run configuration</h2><div class="hit-card"><div class="hit-box"><div class="small">Reference name</div><div class="big">{safe_text(reference_name)}</div></div><div class="hit-box"><div class="small">Species</div><div class="big">{safe_text(reference_species)}</div></div><div class="hit-box"><div class="small">Reference Docker</div><div class="big">{safe_text(reference_docker)}</div></div><div class="hit-box"><div class="small">Generated UTC</div><div class="big">{safe_text(generated)}</div></div></div><div class="callout"><strong>Phenotype coding:</strong> {safe_text(case_label)} = 1; {safe_text(control_label)} = 0. GWAS mode: {safe_text(gwas_mode)}; SNP branch: {safe_text(snp_status)}; Gubbins recombination module: {safe_text(gubbins_effective)}; container backend recorded as {safe_text(container_backend)}.</div></div>
+<div class="card half"><h2><span>04</span> Top-hit GenBank annotation rescue</h2><div class="hit-card"><div class="hit-box"><div class="small">Display name</div><div class="big">{safe_text(display_name)}</div></div><div class="hit-box"><div class="small">Pangenome/SNP marker</div><div class="big">{safe_text(feature_id)}</div></div><div class="hit-box"><div class="small">Reference locus / gene</div><div class="big">{safe_text((reference_locus_tag or 'not matched') + ' / ' + (reference_gene or 'not assigned'))}</div></div><div class="hit-box"><div class="small">Confidence</div><div class="big"><span class="conf {confidence_badge_class(annotation_confidence)}">{safe_text(annotation_confidence or 'none')}</span></div></div></div><div class="callout"><strong>Top-hit interpretation:</strong> {safe_text(interpretation_note)} Reference identity: {safe_text(reference_identity or 'NA')}%; reference coverage: {safe_text(reference_coverage or 'NA')}%. Product: {safe_text(reference_product or product or 'not assigned')}.</div></div>
+<div class="card" id="structure"><h2><span>05</span> Population structure</h2><div class="callout"><strong>Interpretation check:</strong> Review {safe_text(case_label)}/{safe_text(control_label)} clustering before interpreting top hits. Strong phenotype-lineage clustering can indicate lineage-associated markers rather than causal phenotype-associated variation.</div><div class="plot-grid"><div class="plot">{population_pca_svg}</div><div class="plot">{kinship_heatmap_svg}</div></div><pre>{safe_text(population_structure_summary_txt)}</pre></div>
+<div class="card" id="plots"><h2><span>06</span> Gene presence/absence GWAS plots</h2><div class="callout"><strong>Plot note:</strong> The gene association plot is a feature-index GWAS plot, not a full reference-coordinate Manhattan plot. Significant points are interpreted against the {safe_text(case_label)} versus {safe_text(control_label)} phenotype.</div><div class="plot-grid"><div class="plot">{manhattan_svg}</div><div class="plot">{qq_svg}</div></div><pre>{safe_text(plot_summary_txt)}</pre></div>
 {snp_section}
-<div class=\"card\" id=\"hits\"><h2><span>06</span> Top priority gene presence/absence GWAS hits</h2>{top_cards(top_rows, TOP_CARD_COUNT)}<h3>Prioritized hit table</h3>{table_from_tsv('~{top_priority_hits}', max_rows=100, reorder=True)}</div>
-<div class=\"card\" id=\"allhits\"><h2><span>06</span> All significant hits</h2>{table_from_tsv('~{all_significant_hits}', max_rows=100, reorder=True)}</div>
-<div class=\"card\" id=\"annotation\"><h2><span>07</span> Reference annotation confidence guide</h2><div class=\"callout\"><strong>Annotation caveat:</strong> Reference annotation rescue is intended to improve interpretability of Panaroo clusters. Low-confidence matches should not be treated as definitive gene calls. Panaroo group IDs such as group_2271 are pangenome feature identifiers, not stable biological gene names, and may change across runs depending on input samples and clustering. For MTBC, PE/PPE and PE-PGRS regions can be repetitive, assembly-sensitive, and difficult to annotate from short-read assemblies.</div>{confidence_table_html()}<h3>Reference annotation summary</h3><pre>{safe_text(annotation_summary_txt)}</pre></div>
-<div class=\"card half\" id=\"validation\"><h2><span>08</span> Input validation</h2><pre>{safe_text(validation_txt)}</pre></div><div class=\"card half\" id=\"panaroo\"><h2><span>09</span> Panaroo summary</h2><pre>{safe_text(panaroo_txt)}</pre></div><div class=\"card half\" id=\"interpretation\"><h2><span>10</span> Interpretation guidance</h2><div class=\"callout\">Microbial GWAS can be confounded by lineage structure, outbreak clustering, recombination, phenotype misclassification, and small sample size. Reference annotation rescue improves interpretability but does not validate causality. Candidate hits should be validated in larger, independent datasets and interpreted with biological plausibility and epidemiological context.</div></div>
-<div class=\"card\" id=\"outputs\"><h2><span>11</span> Key output files</h2><div class=\"pipeline\"><div class=\"step\"><div class=\"idx\">GWAS</div><div class=\"title\">{safe_text(Path('~{pyseer_gene_assoc}').name)}</div><p>Raw pyseer gene association results. Rows detected: {pyseer_n}.</p></div><div class=\"step\"><div class=\"idx\">Priority</div><div class=\"title\">{safe_text(Path('~{top_priority_hits}').name)}</div><p>Ranked top hits with reference annotation columns.</p></div><div class=\"step\"><div class=\"idx\">Plots</div><div class=\"title\">{safe_text(prefix)}_manhattan.svg / {safe_text(prefix)}_qq.svg</div><p>Feature-index association plot and QQ plot.</p></div><div class=\"step\"><div class=\"idx\">Phenotype</div><div class=\"title\">{safe_text(Path('~{phenotype_tsv}').name)}</div><p>Case/control phenotype table used by pyseer.</p></div><div class=\"step\"><div class=\"idx\">Structure</div><div class=\"title\">{safe_text(Path('~{mash_distances}').name)}</div><p>Square Mash distance matrix used for correction.</p></div><div class=\"step\"><div class=\"idx\">Report</div><div class=\"title\">{safe_text(prefix)}_report.html</div><p>Integrated HTML report with cohort, pangenome, GWAS, plots, annotation, and provenance summaries.</p></div></div></div>
-</section><div class=\"footer\">rMAP-GWAS report generated from successful Cromwell workflow outputs.</div></div></body></html>"""
+{gubbins_section}
+<div class="card" id="hits"><h2><span>07</span> Top priority gene presence/absence GWAS hits</h2>{top_cards(top_rows, 5)}<h3>Prioritized hit table</h3>{table_from_tsv('~{top_priority_hits}', max_rows=100, reorder=True)}</div>
+<div class="card" id="allhits"><h2><span>08</span> All significant gene presence/absence hits</h2>{table_from_tsv('~{all_significant_hits}', max_rows=100, reorder=True)}</div>
+<div class="card" id="annotation"><h2><span>09</span> Reference annotation confidence guide</h2><div class="callout"><strong>Annotation caveat:</strong> Reference annotation rescue is intended to improve interpretability of pangenome/SNP markers. Low-confidence matches should not be treated as definitive gene calls. Candidate hits should be validated in independent datasets and interpreted in the context of {safe_text(case_label)} versus {safe_text(control_label)}.</div>{confidence_table_html()}<h3>Reference annotation summary</h3><pre>{safe_text(annotation_summary_txt)}</pre></div>
+<div class="card half" id="validation"><h2><span>10</span> Input validation</h2><pre>{safe_text(validation_txt)}</pre></div><div class="card half" id="panaroo"><h2><span>11</span> Panaroo summary</h2><pre>{safe_text(panaroo_txt)}</pre></div><div class="card half" id="interpretation"><h2><span>12</span> Interpretation guidance</h2><div class="callout">Microbial GWAS can be confounded by lineage structure, outbreak clustering, recombination, phenotype misclassification, and small sample size. Use the population-structure plots and, for recombining species, consider enabling Gubbins to reduce recombinant-block-driven SNP associations. Interpret candidate markers as associations with {safe_text(case_label)} versus {safe_text(control_label)}, not as proven causal determinants.</div></div>
+<div class="card" id="outputs"><h2><span>13</span> Key output files</h2><div class="pipeline"><div class="step"><div class="idx">Phenotype</div><div class="title">{safe_text(Path('~{phenotype_legend_tsv}').name)}</div><p>Metadata-derived legend used throughout this report.</p></div><div class="step"><div class="idx">GWAS</div><div class="title">{safe_text(Path('~{pyseer_gene_assoc}').name)}</div><p>Raw pyseer gene association results. Rows detected: {pyseer_n}.</p></div><div class="step"><div class="idx">SNP GWAS</div><div class="title">{safe_text(Path('~{pyseer_snp_assoc}').name)}</div><p>Raw pyseer SNP marker association results. Rows detected: {snp_pyseer_n}.</p></div><div class="step"><div class="idx">Priority</div><div class="title">{safe_text(Path('~{top_priority_hits}').name)}</div><p>Ranked top gene hits with reference annotation columns.</p></div><div class="step"><div class="idx">Structure</div><div class="title">{safe_text(Path('~{mash_distances}').name)}</div><p>Square Mash distance matrix used for correction and visualization.</p></div><div class="step"><div class="idx">Report</div><div class="title">{safe_text(prefix)}_report.html</div><p>Integrated HTML report with phenotype legend, GWAS plots, annotation, and provenance summaries.</p></div></div></div>
+</section><div class="footer">rMAP-GWAS report generated from successful Cromwell workflow outputs.</div></div></body></html>'''
 
 Path(prefix + "_report.html").write_text(html_doc)
 provenance = {
     "workflow": "rMAP-GWAS",
-    "workflow_version": "0.3.0-snp-gwas",
-    "description": "Modular microbial GWAS from paired-end reads with gene presence/absence GWAS, optional reference-based SNP GWAS, population-structure plots, GenBank annotation rescue, odds ratios, 95% confidence intervals, and SVG plots.",
+    "workflow_version": "0.4.0-phenotype-display-labels",
+    "description": "Modular microbial GWAS with metadata-derived phenotype display labels in HTML reports.",
     "gwas_mode": gwas_mode,
     "do_snp_gwas": do_snp_gwas,
+    "do_gubbins": do_gubbins,
+    "gubbins_status": gubbins_status_value,
+    "gubbins_filtering_note": gubbins_filtering_note,
     "container_backend": container_backend,
     "reference": {"reference_docker": reference_docker, "reference_species": reference_species, "reference_name": reference_name},
-    "phenotype_coding": {"case": 1, "control": 0},
+    "phenotype_coding": {"case": 1, "control": 0, "case_display_label": case_label, "control_display_label": control_label, "phenotype": phenotype_tested, "metadata_display_column": legend["metadata_column"]},
     "cases": cases,
     "controls": controls,
     "total_samples": total,
-    "top_hit": {
-        "feature_id": feature_id,
-        "display_name": display_name,
-        "display_label": display_subtitle,
-        "gene_name": gene_name,
-        "product": product,
-        "reference_locus_tag": reference_locus_tag,
-        "reference_gene": reference_gene,
-        "reference_product": reference_product,
-        "reference_identity": reference_identity,
-        "reference_coverage": reference_coverage,
-        "annotation_confidence": annotation_confidence,
-        "interpretation_note": interpretation_note,
-        "enriched_in": enriched_in,
-        "pvalue": pvalue,
-        "odds_ratio": odds_ratio,
-        "priority_score": priority_score,
-        "case_frequency": case_frequency,
-        "control_frequency": control_frequency
-    },
-    "tables": {"top_priority_hits_rows": len(top_rows), "top_cards_displayed": min(TOP_CARD_COUNT, len(top_rows)), "top_table_max_rows": 100},
+    "top_hit": {"feature_id": feature_id, "display_name": display_name, "display_label": display_subtitle, "annotation_confidence": annotation_confidence},
     "plots": {"gene_feature_index_association_plot": prefix + "_manhattan.svg", "gene_qq": prefix + "_qq.svg", "population_pca": prefix + "_population_pca.svg", "kinship_heatmap": prefix + "_kinship_heatmap.svg", "snp_feature_index_association_plot": prefix + "_SNP_manhattan.svg", "snp_qq": prefix + "_SNP_qq.svg"},
-    "snp_gwas": {"status": snp_status, "pyseer_rows": snp_pyseer_n, "top_snp_rows": len(snp_top_rows), "vcf": Path('~{snp_vcf}').name},
+    "gubbins_outputs": {"summary": Path('~{gubbins_summary}').name, "filtered_alignment": Path('~{gubbins_filtered_alignment}').name, "recombination_gff": Path('~{gubbins_recombination_gff}').name, "log": Path('~{gubbins_log}').name},
     "generated_utc": generated
 }
 Path(prefix + "_run_provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
