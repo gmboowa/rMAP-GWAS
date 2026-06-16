@@ -13,178 +13,340 @@
 
 ```text
 Sample set / paired-end FASTQ inputs
-        │
-        ├── sample_names 
-        ├── read1s       
-        ├── read2s       
-        └── groups i.e case/control      
-                         █
+        |
+        |-- sample_names
+        |-- read1s
+        |-- read2s
+        |-- groups
+        |       case / control
+        |
+        v
+Metadata-only input validation & cohort checks
+        |
+        |-- Confirm equal array lengths:
+        |       sample_names
+        |       read1_count
+        |       read2_count
+        |       groups
+        |
+        |-- Confirm unique sample IDs
+        |
+        |-- Confirm valid group labels:
+        |       case / control
+        |       1 / 0
+        |       true / false
+        |       yes / no
+        |
+        |-- Confirm at least one case and one control
+        |
+        |-- Generate validation report
+        |
+        |-- Important:
+        |       This validation task does not localize FASTQ files.
+        |       It checks metadata and array counts only.
+        |
+        `-- Downstream tasks start only after validation succeeds.
+                         ║
+                         ║
                          ▼
-Input validation & cohort checks
-        │
-        ├── Confirm equal array lengths:
-        │       sample_names, read1s, read2s, groups
-        │
-        ├── Confirm unique sample IDs
-        │
-        ├── Confirm valid group labels:
-        │       case / control
-        │       1 / 0
-        │       true / false
-        │       yes / no
-        │
-        ├── Confirm at least one case & one control
-        │
-        └── Generate validation report
-                         █
+Reference package extraction
+        |
+        |-- Input:
+        |       reference_docker
+        |       reference_name
+        |       reference_species
+        |
+        |-- Extract species-specific reference files from Docker image:
+        |       reference.fasta
+        |       reference.gff
+        |       reference.genbank
+        |
+        |-- Used for:
+        |       run provenance
+        |       optional SNP GWAS
+        |       post-GWAS GenBank annotation rescue
+                         ║
+                         ║
                          ▼
 Phenotype table generation
-        │
-        ├── Case samples coded as:      1
-        ├── Control samples coded as:   0
-        │
-        ├── Output:
-        │       <output_prefix>_phenotypes.tsv
-        │
-        └── Output:
-                <output_prefix>_sample_groups.tsv
-                         █
+        |
+        |-- Case samples coded as:      1
+        |-- Control samples coded as:   0
+        |
+        |-- Outputs:
+        |       <output_prefix>_phenotypes.tsv
+        |       <output_prefix>_sample_groups.tsv
+                         ║
+                         ║
                          ▼
 All selected samples routed together
-        │
-        ├── No species exclusion branch at this stage
-        ├── No case/control separation for assembly or annotation
-        └── Case/control labels are retained only for GWAS phenotype coding
-                         █
+        |
+        |-- No case/control separation for read processing
+        |-- No species-exclusion branch at this stage
+        |-- All samples proceed through the same QC, assembly, annotation,
+        |   pangenome &  distance-matrix workflow
+        |
+        `-- Case/control labels are retained for phenotype coding,
+            enrichment summaries, plots & GWAS interpretation.
+                         ║
+                         ║
                          ▼
 Per-sample processing scatter
-        │
-        ├── For each selected sample:
-        │
-        │       Paired-end FASTQ files
-        │              │
-        │              ▼
-        │       Read trimming & QC with fastp
-        │              │
-        │              ├── Trimmed R1 FASTQ
-        │              ├── Trimmed R2 FASTQ
-        │              ├── fastp HTML report
-        │              └── fastp JSON report
-        │              │
-        │              ▼
-        │       De novo genome assembly with Shovill
-        │              │
-        │              ├── Contigs FASTA
-        │              └── Shovill log
-        │              │
-        │              ▼
-        │       Assembly quality control with QUAST
-        │              │
-        │              └── QUAST report TSV
-        │              │
-        │              ▼
-        │       Genome annotation with Prokka
-        │              │
-        │              ├── GFF annotation
-        │              ├── GenBank file
-        │              ├── Protein FASTA
-        │              └── Nucleotide feature FASTA
-        │
-        └── End per-sample scatter
-                         █
+        |
+        |-- For each selected sample:
+        |
+        |       Paired-end FASTQ files
+        |              |
+        |              v
+        |       Read trimming & QC with fastp
+        |              |
+        |              |-- Trimmed R1 FASTQ
+        |              |-- Trimmed R2 FASTQ
+        |              |-- fastp HTML report
+        |              `-- fastp JSON report
+        |              |
+        |              v
+        |       *De novo* genome assembly with Shovill
+        |              |
+        |              |-- Contigs FASTA
+        |              `-- Shovill log
+        |              |
+        |              v
+        |       Assembly quality control with QUAST
+        |              |
+        |              `-- QUAST report TSV
+        |              |
+        |              v
+        |       Genome annotation with Prokka
+        |              |
+        |              |-- GFF annotation
+        |              |-- GenBank file
+        |              |-- Protein FASTA
+        |              `-- Nucleotide feature FASTA
+        |
+        `-- End per-sample scatter
+                         ║
+                         ║
                          ▼
 Cohort-level pangenome construction
-        │
-        ├── Collect all Prokka GFF files
-        │
-        ├── Run Panaroo pangenome analysis
-        │
-        ├── Clean pangenome graph using strict mode
-        │
-        ├── Remove invalid genes
-        │
-        └── Generate gene presence/absence matrix
-                         │
-                         ├── gene_presence_absence.csv
-                         ├── gene_presence_absence.Rtab
-                         └── panaroo_summary.txt
-                         █
+        |
+        |-- Collect all Prokka GFF files
+        |-- Run Panaroo pangenome analysis
+        |-- Clean pangenome graph
+        |-- Remove invalid genes where supported
+        |-- Generate gene presence/absence matrix
+        |
+        |-- Outputs:
+        |       gene_presence_absence.csv
+        |       gene_presence_absence.Rtab
+        |       gene_data.csv
+        |       combined_DNA_CDS.fasta
+        |       combined_protein_CDS.fasta
+        |       pan_genome_reference.fa
+        |       panaroo_summary.txt
+                         ║
+                         ║
                          ▼
 Cohort-level genome distance estimation
-        │
-        ├── Collect all Shovill assemblies
-        ├── Rename assemblies by sample ID
-        ├── Create Mash sketches
-        └── Compute pairwise Mash distance matrix
-                         │
-                         └── mash_distances.tsv
-                         │
+        |
+        |-- Collect all Shovill assemblies
+        |-- Rename assemblies by sample ID
+        |-- Create Mash sketches
+        |-- Compute pairwise Mash distances
+        |-- Convert long Mash output to a square pyseer-compatible matrix
+        |
+        |-- Output:
+        |       mash_distances.tsv
+                         ║
+                         ║
                          ▼
-Gene-based microbial GWAS
-        │
-        ├── Inputs:
-        │       phenotype table
-        │       Panaroo gene presence/absence matrix
-        │       Mash distance matrix
-        │
-        ├── Run pyseer gene presence/absence GWAS
-        │
-        ├── Apply allele-frequency filters:
-        │       min_af
-        │       max_af
-        │
-        └── Correct for population structure using Mash distances
-                         │
-                         └── pyseer_gene_assoc.tsv
-                         █
+Population-structure visualization
+        |
+        |-- Input:
+        |       phenotype table
+        |       Mash distance matrix
+        |
+        |-- Generate:
+        |       Mash distance / kinship heatmap
+        |       PCoA population-structure plot
+        |
+        `-- Used to assess whether phenotype labels cluster by lineage
+            or genetic background.
+                         ║
+                         ║
+                         ▼
+Gene presence/absence GWAS
+        |
+        |-- Inputs:
+        |       phenotype table
+        |       Panaroo gene presence/absence matrix
+        |       Mash distance matrix
+        |
+        |-- Run pyseer gene presence/absence GWAS
+        |
+        |-- Apply allele-frequency filters:
+        |       min_af
+        |       max_af
+        |
+        |-- Correct for population structure using Mash distances
+        |       pyseer_max_dimensions
+        |       pyseer_force_no_distances
+        |       pyseer_no_distances_fallback
+        |
+        |-- Output:
+        |       pyseer_gene_assoc.tsv
+                         ║
+                         ║
+                         ▼
+Gene GWAS plotting
+        |
+        |-- Generate:
+        |       <output_prefix>_gene_gwas_qq.svg
+        |       <output_prefix>_gene_gwas_manhattan.svg
+        |       <output_prefix>_gene_gwas_plot_summary.tsv
+        |
+        |-- Note:
+        |       The gene GWAS association plot is feature-index based.
+        |       It is not a true reference-coordinate Manhattan plot unless
+        |       gene clusters are confidently mapped to reference coordinates.
+                         ║
+                         ║
                          ▼
 GWAS hit prioritization
-        │
-        ├── Parse pyseer association results
-        ├── Link association hits to Panaroo/Prokka annotations
-        ├── Calculate case & control gene frequencies
-        ├── Estimate enrichment direction:
-        │       case-enriched
-        │       control-enriched
-        │      
-        │
-        ├── Rank features using:
-        │       p-value or q-value
-        │       effect direction
-        │       odds ratio
-        │       annotation availability
-        │       recurrence across samples
-        │
-        └── Generate prioritized GWAS tables
-                         │
-                         ├── <output_prefix>_all_ranked_hits.tsv
-                         ├── <output_prefix>_top_priority_hits.tsv
-                         ├── <output_prefix>_all_significant_hits.tsv
-                         └── <output_prefix>_enrichment_summary.tsv
-                         █
+        |
+        |-- Parse pyseer association results
+        |-- Link association hits to Panaroo/Prokka annotations
+        |-- Calculate case and control gene frequencies
+        |-- Estimate enrichment direction:
+        |       case-enriched
+        |       control-enriched
+        |       mixed / check manually
+        |
+        |-- Rank features using:
+        |       p-value or q-value
+        |       effect direction
+        |       odds ratio
+        |       annotation availability
+        |       recurrence across samples
+        |
+        |-- Outputs:
+        |       <output_prefix>_all_ranked_hits.tsv
+        |       <output_prefix>_top_priority_hits.tsv
+        |       <output_prefix>_all_significant_hits.tsv
+        |       <output_prefix>_enrichment_summary.tsv
+                         ║
+                         ║
+                         ▼
+Post-GWAS GenBank annotation rescue
+        |
+        |-- Inputs:
+        |       prioritized GWAS hit tables
+        |       Panaroo gene_presence_absence.csv
+        |       Panaroo gene_data.csv
+        |       Panaroo combined DNA/protein CDS files
+        |       Panaroo pan-genome reference
+        |       species-specific reference GenBank
+        |
+        |-- For each prioritized Panaroo cluster:
+        |       identify representative sequence
+        |       compare against reference GenBank CDS features
+        |       rescue gene/locus/product annotation where possible
+        |
+        |-- Add annotation columns:
+        |       reference_locus_tag
+        |       reference_gene
+        |       reference_product
+        |       reference_location
+        |       reference_match_type
+        |       reference_identity
+        |       reference_coverage
+        |       annotation_confidence
+        |       annotation_note
+        |
+        |-- Confidence interpretation:
+        |       high    = strong reference-supported annotation
+        |       medium  = plausible annotation; inspect manually
+        |       low     = tentative annotation only
+        |       none    = no usable GenBank match
+        |
+        |-- Outputs:
+        |       <output_prefix>_top_priority_hits.annotated.tsv
+        |       <output_prefix>_all_significant_hits.annotated.tsv
+        |       <output_prefix>_reference_annotation_summary.tsv
+                         ║
+                         ║
+                         ▼
+Optional SNP GWAS branch
+        |
+        |-- Controlled by:
+        |       do_snp_gwas = true / false
+        |
+        |-- If do_snp_gwas = false:
+        |       create SNP placeholder files
+        |       report that SNP GWAS was not run
+        |
+        |-- If do_snp_gwas = true:
+        |       use reference FASTA from reference_docker
+        |       call SNPs with Snippy
+        |       run pyseer SNP GWAS
+        |       prioritize SNP associations
+        |       generate SNP QQ & Manhattan-style plots
+        |
+        |-- Outputs when enabled:
+        |       <output_prefix>_SNP.vcf
+        |       <output_prefix>_SNP_pyseer_assoc.tsv
+        |       <output_prefix>_SNP_top_hits.tsv
+        |       <output_prefix>_SNP_all_significant_hits.tsv
+        |       <output_prefix>_SNP_summary.tsv
+        |       <output_prefix>_SNP_qq.svg
+        |       <output_prefix>_SNP_manhattan.svg
+                         ║
+                         ║
                          ▼
 Integrated reporting & provenance
-        │
-        ├── Merge validation report
-        ├── Summarize case/control composition
-        ├── Summarize Panaroo outputs
-        ├── Display prioritized association hits
-        ├── Record reference/provenance settings
-        │       reference_docker
-        │       reference_species
-        │       reference_name
-        │
-        └── Generate final report files
-                         │
-                         ├── <output_prefix>_report.html
-                         └── <output_prefix>_run_provenance.json
+        |
+        |-- Merge:
+        |       validation report
+        |       phenotype table
+        |       sample group table
+        |       Panaroo summary
+        |       Mash population-structure plots
+        |       gene GWAS QQ plot
+        |       gene GWAS feature-index association plot
+        |       prioritized annotated gene hits
+        |       optional SNP GWAS outputs
+        |       reference annotation summary
+        |
+        |-- Display:
+        |       case/control composition
+        |       workflow architecture
+        |       top-hit GenBank annotation rescue
+        |       top 5 prioritized GWAS hits
+        |       all significant hits
+        |       annotation confidence guide
+        |       small-sample-size caution
+        |       Panaroo cluster-ID caveat
+        |       PE/PPE & repetitive-region caution where relevant
+        |
+        |-- Record provenance:
+        |       reference_docker
+        |       reference_species
+        |       reference_name
+        |       container backend
+        |       GWAS mode
+        |       SNP GWAS status
+        |       pyseer distance-correction settings
+        |
+        |-- Final outputs:
+        |       <output_prefix>_report.html
+        |       <output_prefix>_run_provenance.json
 ```
 
 ### Sample routing logic
 
-rMAP-GWAS uses a cohort-level case–control design.  It routes all selected samples through the same processing path. The `group` column is not used to split samples into separate computational branches during read processing, assembly, or annotation. Instead, it is used to construct the phenotype table required for microbial GWAS.
+rMAP-GWAS uses a cohort-level case/control design. All selected samples are routed together through read QC, assembly, annotation, pangenome construction & distance estimation. The `groups` input is used to create the GWAS phenotype table, not to split samples into separate processing branches.
 
-Each selected sample must have:
+Each sample must have:
 
 ```text
 sample ID
@@ -193,15 +355,68 @@ read2 FASTQ
 group label
 ```
 
-The group label is interpreted as:
+The default group labels are:
 
 ```text
-case      → phenotype value 1
-control   → phenotype value 0
+case     -> phenotype value 1
+control  -> phenotype value 0
 ```
 
-The workflow also accepts common equivalents such as `1/0`, `true/false`, and `yes/no`.
+The workflow also accepts common equivalents such as `1/0`, `true/false`, & `yes/no`, depending on the configured `case_label` & `control_label`.
 
+### Validation-ordering design
+
+The current workflow validates metadata before expensive tasks are allowed to proceed. The validation task receives:
+
+```text
+sample_names
+read1_count
+read2_count
+groups
+case_label
+control_label
+```
+
+It does not receive the actual FASTQ files. This prevents unnecessary FASTQ localization during validation & avoids wasting compute if the input table has incorrect sample IDs, group labels, or array lengths.
+
+### Reference configuration
+
+The same WDL can be used across species by changing:
+
+```text
+reference_docker
+reference_name
+reference_species
+```
+
+Each species-specific reference Docker image should provide:
+
+```text
+reference.fasta
+reference.gff
+reference.genbank
+```
+
+The GenBank file is used for post-GWAS annotation rescue of prioritized Panaroo gene clusters.
+
+Example MTBC configuration:
+
+```text
+reference_docker  = "gmboowa/rmap-gwas-mtbc-refs:2026.06"
+reference_name    = "MTBC_2026_06"
+reference_species = "Mycobacterium tuberculosis complex"
+```
+
+Example *Klebsiella pneumoniae* configuration:
+
+```text
+reference_docker  = "gmboowa/rmap-gwas-kpneumo-refs:2026.06"
+reference_name    = "KPNEUMO_2026_06"
+reference_species = "Klebsiella pneumoniae"
+
+```
+
+The workflow also accepts common equivalents such as `1/0`, `true/false`, & `yes/no`.
 
 
 ### Case–control interpretation
@@ -215,6 +430,15 @@ SRRyyyyyy       0
 ```
 
 This phenotype table is passed to pyseer together with the Panaroo gene presence/absence matrix & Mash distance matrix.
+
+### Interpretation notes
+
+Panaroo cluster IDs such as `group_2270` are pangenome feature identifiers, not stable biological gene names. These IDs may change across runs depending on the input cohort & pangenome clustering.
+
+The GenBank annotation rescue step improves interpretability by mapping prioritized clusters back to a species-specific reference where possible. Low-confidence matches should be treated as tentative & should retain the original Panaroo cluster ID in reports.
+
+For small smoke-test runs, the workflow can validate execution, reporting & end-to-end integration, but association results should not be interpreted as final biological or clinical findings without larger cohorts & independent validation.
+
 
 ### Population structure handling
 
