@@ -43,7 +43,7 @@ Metadata-only input validation & cohort checks
         |
         |-- Important:
         |       This validation task does not localize FASTQ files.
-        |       It checks metadata and array counts only.
+        |       It checks metadata & array counts only.
         |
         `-- Downstream tasks start only after validation succeeds.
                          ║
@@ -280,15 +280,47 @@ Optional SNP GWAS branch
         |
         |-- Controlled by:
         |       do_snp_gwas = true / false
+        |       do_gubbins = true / false
         |
         |-- If do_snp_gwas = false:
         |       create SNP placeholder files
-        |       report that SNP GWAS was not run
+        |       create Gubbins placeholder files
+        |       report that SNP GWAS & Gubbins were not run
         |
         |-- If do_snp_gwas = true:
         |       use reference FASTA from reference_docker
         |       call SNPs with Snippy
-        |       run pyseer SNP GWAS
+        |       generate Snippy SNP VCF & core alignment
+        |
+        |       Optional Gubbins recombination assessment / filtering
+        |              |
+        |              |-- Controlled by:
+        |              |       do_gubbins = true / false
+        |              |
+        |              |-- If do_gubbins = false:
+        |              |       keep original Snippy SNP VCF for pyseer
+        |              |       create Gubbins placeholder summary/log files
+        |              |
+        |              |-- If do_gubbins = true:
+        |              |       run Gubbins on the Snippy core alignment
+        |              |       identify predicted recombinant regions
+        |              |       remove SNPs inside predicted recombinant blocks
+        |              |       create a Gubbins-filtered SNP VCF
+        |              |
+        |              |-- Safe fallback behavior:
+        |              |       if the core alignment is empty
+        |              |       if fewer than 3 sequences are available
+        |              |       if run_gubbins.py is unavailable
+        |              |       if Gubbins fails softly
+        |              |       if filtering removes all SNP records
+        |              |
+        |              `-- In fallback cases, continue with the original Snippy SNP VCF
+        |                  and record the reason in the Gubbins summary/log.
+        |
+        |       run pyseer SNP GWAS using:
+        |              Gubbins-filtered VCF when available
+        |              otherwise original Snippy SNP VCF
+        |
         |       prioritize SNP associations
         |       generate SNP QQ & Manhattan-style plots
         |
@@ -300,6 +332,11 @@ Optional SNP GWAS branch
         |       <output_prefix>_SNP_summary.tsv
         |       <output_prefix>_SNP_qq.svg
         |       <output_prefix>_SNP_manhattan.svg
+        |       <output_prefix>_SNP_gubbins_summary.tsv
+        |       <output_prefix>_SNP_gubbins.filtered_polymorphic_sites.fasta
+        |       <output_prefix>_SNP_gubbins.recombination_predictions.gff
+        |       <output_prefix>_SNP_gubbins.filtered.snps.vcf
+        |       <output_prefix>_SNP_gubbins.log
                          ║
                          ║
                          ▼
@@ -315,6 +352,7 @@ Integrated reporting & provenance
         |       gene GWAS feature-index association plot
         |       prioritized annotated gene hits
         |       optional SNP GWAS outputs
+        |       optional Gubbins recombination summary/log/filtering outputs
         |       reference annotation summary
         |
         |-- Display:
@@ -324,6 +362,8 @@ Integrated reporting & provenance
         |       top 5 prioritized GWAS hits
         |       all significant hits
         |       annotation confidence guide
+        |       optional Gubbins status and recommendation
+        |       Gubbins input-vs-filtered SNP record counts when available
         |       small-sample-size caution
         |       Panaroo cluster-ID caveat
         |       PE/PPE & repetitive-region caution where relevant
@@ -335,11 +375,16 @@ Integrated reporting & provenance
         |       container backend
         |       GWAS mode
         |       SNP GWAS status
+        |       do_gubbins setting
+        |       Gubbins run status and filtering note
+        |       Gubbins output filenames
         |       pyseer distance-correction settings
         |
         |-- Final outputs:
         |       <output_prefix>_report.html
         |       <output_prefix>_run_provenance.json
+        |       <output_prefix>_SNP_gubbins_summary.tsv
+        |       <output_prefix>_SNP_gubbins.log
 ```
 
 ### Sample routing logic
