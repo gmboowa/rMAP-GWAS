@@ -834,4 +834,4 @@ If you use rMAP-GWAS, cite this repository & the underlying tools used in the wo
 
 ## License
 
-Add the project license here, for example MIT, Apache-2.0, or another license selected by the repository owner.
+MIT license 
