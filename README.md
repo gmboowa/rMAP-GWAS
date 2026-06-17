@@ -1,6 +1,33 @@
 # rMAP-GWAS
 
-**rMAP-GWAS** — **rapid Microbial Analysis Pipeline for Genome-Wide Association Studies** — is a portable WDL/Cromwell workflow for microbial case-control genome-wide association studies from paired-end Illumina reads. It is designed to generate interpretable, reproducible association results with annotated top-priority loci, case/control enrichment, statistical evidence, plots & a self-contained HTML report.
+**rMAP-GWAS** is a Dockerized WDL/Cromwell workflow for reproducible **microbial genome-wide association studies (GWAS)** from paired-end bacterial isolate reads.
+
+The current workflow accepts one sample set with explicit binary grouping, runs read trimming, genome assembly, annotation, pangenome construction, population-structure estimation, gene presence/absence GWAS, optional reference-based SNP GWAS, optional Gubbins recombination assessment for SNP analyses, post-GWAS GenBank annotation rescue & an integrated portable HTML report.
+
+---
+
+## Current implementation status
+
+The current `rMAP_GWAS.wdl` implements:
+
+- **Sample-set input validation** using `sample_names`, `read1s`, `read2s`, & `groups`.
+- **Binary phenotype coding** from `groups` where cases are coded as `1` & controls as `0`.
+- Optional biological display labels using `phenotype_name` & `phenotype_display_values` so the report can show contrasts such as `case (blood)` versus `control (sputum)`.
+- **fastp** read trimming.
+- **Shovill** bacterial isolate assembly.
+- **QUAST** assembly QC.
+- **Prokka** annotation by default, with optional **Bakta** annotation using `use_bakta=true`.
+- **Panaroo** pangenome construction & gene presence/absence matrix generation.
+- **Mash** distance matrix generation for population-structure correction & visualization.
+- **pyseer** gene presence/absence GWAS.
+- Prioritized gene association tables with case/control enrichment summaries & odds ratios.
+- Reference GenBank annotation rescue for prioritized pangenome markers.
+- Optional **Snippy + pyseer** reference-based SNP GWAS using `do_snp_gwas=true`.
+- Optional **Gubbins** recombination assessment/filtering for SNP GWAS using `do_gubbins=true`.
+- SVG Manhattan-style & QQ plots for gene & SNP GWAS results.
+- A downloadable, offline HTML report with interpretation guardrails & key output files.
+
+The current WDL **does not** run unitig/k-mer GWAS, Scoary, FastQC, MultiQC, or snpEff/bcftools csq. Those should not be described as active workflow steps unless they are added to the WDL.
 
 ## Visual summary of the rMAP-GWAS workflow
 <p align="center">
@@ -387,714 +414,404 @@ Integrated reporting & provenance
         |       <output_prefix>_SNP_gubbins.log
 ```
 
-### Sample routing logic
 
-rMAP-GWAS uses a cohort-level case/control design. All selected samples are routed together through read QC, assembly, annotation, pangenome construction & distance estimation. The `groups` input is used to create the GWAS phenotype table, not to split samples into separate processing branches.
+## Input model
 
-Each sample must have:
+The workflow uses a **single sample-set design**, not separate case/control arrays.
 
-```text
-sample ID
-read1 FASTQ
-read2 FASTQ
-group label
-```
+### Required inputs
 
-The default group labels are:
+| Input | Type | Description |
+|---|---:|---|
+| `sample_names` | `Array[String]+` | Unique sample IDs. Sample names must not contain whitespace. |
+| `read1s` | `Array[File]+` | Forward paired-end FASTQ files. |
+| `read2s` | `Array[File]+` | Reverse paired-end FASTQ files. |
+| `groups` | `Array[String]+` | Binary group labels. Accepted case labels include `case`, `cases`, `1`, `true`, `yes`. Accepted control labels include `control`, `controls`, `0`, `false`, `no`. |
 
-```text
-case     -> phenotype value 1
-control  -> phenotype value 0
-```
+The four required arrays must have equal length & be in the same sample order.
 
-The workflow also accepts common equivalents such as `1/0`, `true/false`, & `yes/no`, depending on the configured `case_label` & `control_label`.
+### Optional phenotype display inputs
 
-### Validation-ordering design
+| Input | Type | Default | Description |
+|---|---:|---:|---|
+| `phenotype_name` | `String` | `case_control` | Name shown in phenotype & report tables. Use the biological contrast column name when available, for example `specimen_source`, `drug_resistance`, or `carriage_status`. |
+| `phenotype_display_values` | `Array[String]` | `[]` | Optional metadata values used only to make the HTML report biologically interpretable. If provided, this array must have the same length & order as `sample_names`. |
 
-The current workflow validates metadata before expensive tasks are allowed to proceed. The validation task receives:
-
-```text
-sample_names
-read1_count
-read2_count
-groups
-case_label
-control_label
-```
-
-It does not receive the actual FASTQ files. This prevents unnecessary FASTQ localization during validation & avoids wasting compute if the input table has incorrect sample IDs, group labels, or array lengths.
-
-### Reference configuration
-
-The same WDL can be used across species by changing:
-
-```text
-reference_docker
-reference_name
-reference_species
-```
-
-Each species-specific reference Docker image should provide:
-
-```text
-reference.fasta
-reference.gff
-reference.genbank
-```
-
-The GenBank file is used for post-GWAS annotation rescue of prioritized Panaroo gene clusters.
-
-Example MTBC configuration:
-
-```text
-reference_docker  = "gmboowa/rmap-gwas-mtbc-refs:2026.06"
-reference_name    = "MTBC_2026_06"
-reference_species = "Mycobacterium tuberculosis complex"
-```
-
-Example *Klebsiella pneumoniae* configuration:
-
-```text
-reference_docker  = "gmboowa/rmap-gwas-kpneumo-refs:2026.06"
-reference_name    = "KPNEUMO_2026_06"
-reference_species = "Klebsiella pneumoniae"
-
-```
-
-The workflow also accepts common equivalents such as `1/0`, `true/false`, & `yes/no`.
-
-
-### Case–control interpretation
-
-The phenotype table is generated internally from the selected sample set. Samples labelled as cases are coded as `1`, while controls are coded as `0`.
-
-```text
-sample          case_control
-SRRxxxxxx       1
-SRRyyyyyy       0
-```
-
-This phenotype table is passed to pyseer together with the Panaroo gene presence/absence matrix & Mash distance matrix.
-
-### Interpretation notes
-
-Panaroo cluster IDs such as `group_2270` are pangenome feature identifiers, not stable biological gene names. These IDs may change across runs depending on the input cohort & pangenome clustering.
-
-The GenBank annotation rescue step improves interpretability by mapping prioritized clusters back to a species-specific reference where possible. Low-confidence matches should be treated as tentative & should retain the original Panaroo cluster ID in reports.
-
-For small smoke-test runs, the workflow can validate execution, reporting & end-to-end integration, but association results should not be interpreted as final biological or clinical findings without larger cohorts & independent validation.
-
-
-### Population structure handling
-
-Microbial GWAS can be confounded by clonal population structure, relatedness, outbreak clusters, lineage effects & uneven case/control sampling. rMAP-GWAS therefore computes pairwise Mash distances from assembled genomes & supplies this distance matrix to pyseer during gene-based association testing.
-
-```text
-Assemblies
-    ↓
-Mash sketch
-    ↓
-Mash distance matrix
-    ↓
-pyseer population-structure-aware association testing
-```
-
-### Reference & provenance tracking
-
-For MTBC runs, the workflow records the intended reference package:
-
-```text
-`reference_docker`  = `gmboowa/rmap-gwas-mtbc-refs:2026.06`  
-`reference_species` = *Mycobacterium tuberculosis* complex  
-`reference_name`    = `MTBC_2026_06`
-```
-
-
-These values are written into the final report and provenance JSON. They document the species/reference configuration used or intended for the analysis.
-
-### Current annotation mode
-
-This workflow version uses Prokka annotation before Panaroo pangenome construction.
-
-```text
-Shovill contigs
-    ↓
-Prokka annotation
-    ↓
-GFF files
-    ↓
-Panaroo pangenome
-```
-
-A Bakta-based version can be implemented separately by replacing the annotation task & ensuring downstream GFF compatibility with Panaroo.
-
-### Final workflow outputs
-
-The major outputs are:
-
-```text
-Phenotype table
-Trimmed FASTQ files
-Genome assemblies
-QUAST assembly QC reports
-Prokka annotation files
-Panaroo pangenome matrices
-Mash distance matrix
-pyseer gene association results
-Prioritized GWAS hit tables
-Enrichment summary
-Interactive HTML report
-Run provenance JSON
-```
-
-### Interpretation note
-
-rMAP-GWAS identifies statistical associations between gene presence/absence patterns & case–control phenotype labels. These associations should be interpreted carefully alongside sample size, population structure, lineage distribution, outbreak clustering, phenotype definition & biological plausibility. Candidate hits should be validated in independent datasets or by targeted experimental/epidemiological follow-up where possible.
-
-
-Microbial genome-wide association studies (mGWAS) can identify bacterial genetic variants, unitigs, genes & accessory-genome features associated with phenotypes such as antimicrobial resistance, virulence, host source, outbreak status, colonization, infection, or clinical outcome. However, microbial GWAS requires careful handling of population structure, case-control imbalance, phenotype quality, feature annotation & reproducible reporting.
-
-`rMAP-GWAS` aims to provide an end-to-end cloud-ready workflow that starts from clearly designated **case** & **control** paired-end reads & produces:
-
-
-- read QC & trimming summaries
-- de novo assemblies
-- assembly quality-control metrics
-- genome annotation
-- pangenome/gene presence-absence matrix
-- unitig/k-mer feature matrix
-- population-structure correction inputs
-- microbial GWAS results using `pyseer`
-- annotated significant loci & genes
-- case/control enrichment summaries
-- Manhattan & QQ plots
-- top-priority GWAS hits table
-- portable offline HTML report
+Example: if `groups` is `case/control` but `phenotype_display_values` is `blood/sputum`, the report can display the contrast as **case (blood)** versus **control (sputum)** while preserving binary GWAS coding.
 
 ---
 
-## Intended use cases
-
-`rMAP-GWAS` is designed for microbial isolate datasets where samples can be assigned into two phenotype groups:
-
-- resistant vs susceptible isolates
-- invasive vs colonizing isolates
-- outbreak vs non-outbreak isolates
-- hypervirulent vs non-hypervirulent isolates
-- carbapenemase-positive vs carbapenemase-negative isolates
-- convergent MDR-hvKp vs non-convergent isolates
-- case vs control definitions supplied by the user
-
-The workflow is organism-agnostic in principle, but users should interpret results in the context of species biology, sampling structure, recombination, clonal expansion & phenotype quality.
-
----
-
-## Key features
-
-- **Case-control aware input design**  
-  Users provide separate arrays of case & control paired-end reads in a Cromwell/Terra JSON file.
-
-- **Microbial GWAS engine**  
-  Primary association testing is performed using `pyseer`.
-
-- **Feature types supported**
-  - unitigs/k-mers
-  - pangenome gene presence/absence
-  - optional reference-based SNPs when a reference genome & annotation are provided
-
-- **Population-structure correction**  
-  The workflow generates distance/covariate inputs to reduce false-positive associations caused by clonal population structure.
-
-- **Annotated top hits**  
-  Significant hits are annotated with gene names, products, genomic context, case/control frequencies, enrichment direction, *p*-values, q-values & priority scores.
-
-- **Portable reporting**  
-  A final self-contained HTML report summarizes the full analysis & can be shared without requiring external JavaScript, notebooks, or web services.
-
----
-
-## Workflow structure
-
-```text
-rMAP_GWAS
-├── VALIDATE_CASE_CONTROL_INPUTS
-├── PREPARE_PHENOTYPE_TABLE
-├── FASTP_TRIMMING
-├── FASTQC
-├── MULTIQC
-├── ASSEMBLE_GENOMES
-├── ASSEMBLY_QC
-├── ANNOTATE_GENOMES
-├── PANAROO_PANGENOME
-├── BUILD_GENE_MATRIX
-├── UNITIG_CALLER
-├── MASH_DISTANCE_MATRIX
-├── PYSEER_UNITIG_GWAS
-├── PYSEER_GENE_GWAS
-├── optional PYSEER_SNP_GWAS
-├── ANNOTATE_SIGNIFICANT_HITS
-├── PRIORITIZE_GWAS_HITS
-├── MAKE_GWAS_PLOTS
-└── MERGE_RMAP_GWAS_REPORT
-```
-
----
-
-## Primary tools
-
-| Stage | Recommended tool |
-|---|---|
-| Read QC | FastQC |
-| Read trimming | fastp |
-| QC aggregation | MultiQC |
-| Assembly | Shovill or SPAdes |
-| Assembly QC | QUAST |
-| Genome annotation | Bakta or Prokka |
-| Pangenome | Panaroo |
-| Unitig generation | unitig-caller |
-| Population distance | Mash |
-| GWAS engine | pyseer |
-| Optional gene-only scan | Scoary |
-| Optional SNP workflow | Snippy, bcftools, snpEff/bcftools csq |
-| Reporting | Python, pandas, matplotlib, Jinja2 |
-
----
-
-## Docker/container strategy
-
-The workflow uses public BioContainers, Staph-B, or maintained project images where possible & custom `gmboowa/rmap-gwas-*` images for integration/reporting tasks.
-
-### Public images to use where possible
-
-| Task | Example image |
-|---|---|
-| fastp | `quay.io/biocontainers/fastp:<tag>` |
-| FastQC | `staphb/fastqc:<tag>` |
-| MultiQC | `multiqc/multiqc:<tag>` |
-| Shovill | `quay.io/biocontainers/shovill:<tag>` |
-| SPAdes | `quay.io/biocontainers/spades:<tag>` |
-| QUAST | `staphb/quast:<tag>` |
-| Panaroo | `quay.io/biocontainers/panaroo:<tag>` |
-| unitig-caller | `quay.io/biocontainers/unitig-caller:<tag>` |
-| pyseer | `quay.io/biocontainers/pyseer:<tag>` |
-| Mash | `quay.io/biocontainers/mash:<tag>` |
-| Scoary | `quay.io/biocontainers/scoary:<tag>` |
-| Snippy | `staphb/snippy:<tag>` |
-
-### Custom images 
-
-| Image | Purpose |
-|---|---|
-| `gmboowa/rmap-gwas-pyseer-annotate` | pyseer execution, hit annotation, enrichment summaries, and prioritization |
-| `gmboowa/rmap-gwas-report` | final offline HTML report generation |
-| `gmboowa/rmap-gwas-bakta-db` | optional Bakta database image or reference bundle |
-| `gmboowa/rmap-gwas-reference-bundle:<species-tag>` | optional species-specific reference FASTA/GFF/GenBank resources |
-
----
-
-## Input JSON example
+## Minimal input JSON
 
 ```json
 {
-  "rMAP_GWAS.case_sample_names": ["case_001", "case_002"],
-  "rMAP_GWAS.case_read1s": ["~/case_001_R1.fastq.gz", "~/case_002_R1.fastq.gz"],
-  "rMAP_GWAS.case_read2s": ["~/case_001_R2.fastq.gz", "~/case_002_R2.fastq.gz"],
-
-  "rMAP_GWAS.control_sample_names": ["control_001", "control_002"],
-  "rMAP_GWAS.control_read1s": ["~/control_001_R1.fastq.gz", "~/control_002_R1.fastq.gz"],
-  "rMAP_GWAS.control_read2s": ["~/control_001_R2.fastq.gz", "~/control_002_R2.fastq.gz"],
-
-  "rMAP_GWAS.phenotype_name": "case_control",
-  "rMAP_GWAS.case_label": "case",
-  "rMAP_GWAS.control_label": "control",
-
-  "rMAP_GWAS.do_trimming": true,
-  "rMAP_GWAS.do_assembly": true,
-  "rMAP_GWAS.do_annotation": true,
-  "rMAP_GWAS.do_unitig_gwas": true,
-  "rMAP_GWAS.do_gene_gwas": true,
-  "rMAP_GWAS.do_snp_gwas": false,
-
-  "rMAP_GWAS.reference_fasta": "~/reference.fasta",
-  "rMAP_GWAS.reference_gff": "~/reference.gff",
-  "rMAP_GWAS.covariates_tsv": "~/covariates.tsv",
-
-  "rMAP_GWAS.min_af": 0.01,
-  "rMAP_GWAS.max_af": 0.99,
-  "rMAP_GWAS.min_cases": 10,
-  "rMAP_GWAS.min_controls": 10,
-  "rMAP_GWAS.significance_alpha": 0.05,
-  "rMAP_GWAS.max_cpus": 16,
-  "rMAP_GWAS.max_memory_gb": 64
+  "rMAP_GWAS.sample_names": ["sample_001", "sample_002", "sample_003", "sample_004"],
+  "rMAP_GWAS.read1s": [
+    "~/sample_001_R1.fastq.gz",
+    "~/sample_002_R1.fastq.gz",
+    "~/sample_003_R1.fastq.gz",
+    "~/sample_004_R1.fastq.gz"
+  ],
+  "rMAP_GWAS.read2s": [
+    "~/sample_001_R2.fastq.gz",
+    "~/sample_002_R2.fastq.gz",
+    "~/sample_003_R2.fastq.gz",
+    "~/sample_004_R2.fastq.gz"
+  ],
+  "rMAP_GWAS.groups": ["case", "case", "control", "control"]
 }
 ```
 
----
+### Example with biological display labels
 
-## Phenotype encoding
-
-The workflow internally creates a phenotype table:
-
-```text
-sample      case_control
-case_001    1
-case_002    1
-control_001 0
-control_002 0
+```json
+{
+  "rMAP_GWAS.sample_names": ["sample_001", "sample_002", "sample_003", "sample_004"],
+  "rMAP_GWAS.read1s": [
+    "~/sample_001_R1.fastq.gz",
+    "~/sample_002_R1.fastq.gz",
+    "~/sample_003_R1.fastq.gz",
+    "~/sample_004_R1.fastq.gz"
+  ],
+  "rMAP_GWAS.read2s": [
+    "~/sample_001_R2.fastq.gz",
+    "~/sample_002_R2.fastq.gz",
+    "~/sample_003_R2.fastq.gz",
+    "~/sample_004_R2.fastq.gz"
+  ],
+  "rMAP_GWAS.groups": ["case", "case", "control", "control"],
+  "rMAP_GWAS.phenotype_name": "specimen_source",
+  "rMAP_GWAS.phenotype_display_values": ["blood", "blood", "sputum", "sputum"]
+}
 ```
 
-Interpretation:
+### Terra sample-set mapping
+
+When running on a Terra Cloud platform sample set, map the workflow inputs to the entity-set member attributes. For example, if the entity set is `gwasmtb_set` & the member entity type is `gwasmtb`:
 
 ```text
-positive beta = enriched in cases
-negative beta = enriched in controls
+sample_names              = this.gwasmtbs.gwasmtb_id
+read1s                    = this.gwasmtbs.read1
+read2s                    = this.gwasmtbs.read2
+groups                    = this.gwasmtbs.group
+phenotype_display_values  = this.gwasmtbs.specimen_source
+phenotype_name            = "specimen_source"
 ```
 
-The final report should always display the phenotype coding used for the analysis.
-
----
-
-## Main outputs
-
-```text
-rMAP_GWAS_report.html
-rMAP_GWAS_top_priority_hits.tsv
-rMAP_GWAS_all_significant_hits.tsv
-rMAP_GWAS_pyseer_unitig_assoc.tsv.gz
-rMAP_GWAS_pyseer_gene_assoc.tsv.gz
-rMAP_GWAS_gene_presence_absence.Rtab
-rMAP_GWAS_gene_presence_absence.csv
-rMAP_GWAS_phenotypes.tsv
-rMAP_GWAS_population_structure_distances.tsv
-rMAP_GWAS_manhattan.svg
-rMAP_GWAS_qqplot.svg
-rMAP_GWAS_top_hits_barplot.svg
-rMAP_GWAS_enrichment_summary.tsv
-rMAP_GWAS_run_provenance.json
-```
+The `groups` column should contain the binary GWAS labels. The `phenotype_display_values` column should contain the biological label that makes the report readable.
 
 ---
 
-## Top-priority hits table
+## Common analysis controls
 
-The key interpreted output is:
+| Input | Type | Default | Description |
+|---|---:|---:|---|
+| `min_af` | `Float` | `0.01` | Minimum allele/feature frequency passed to pyseer. |
+| `max_af` | `Float` | `0.99` | Maximum allele/feature frequency passed to pyseer. |
+| `significance_alpha` | `Float` | `0.05` | Significance threshold used for prioritized hit tables & plot summaries. |
+| `pyseer_max_dimensions` | `Int` | `2` | Maximum MDS dimensions used with Mash distances. Small tests may need fewer dimensions. |
+| `pyseer_force_no_distances` | `Boolean` | `false` | If `true`, pyseer runs without Mash distance correction. |
+| `pyseer_no_distances_fallback` | `Boolean` | `true` | If the distance-corrected pyseer model fails, retry without distances. |
+| `output_prefix` | `String` | `rMAP_GWAS` | Prefix used for report & output file names. |
+| `plot_max_points` | `Int` | `5000` | Maximum number of points drawn in SVG GWAS plots. |
 
-```text
-rMAP_GWAS_top_priority_hits.tsv
+`gwas_mode` is recorded in the report/provenance. In the current WDL, the gene presence/absence GWAS branch always runs; the SNP branch is controlled by `do_snp_gwas`.
+
+---
+
+## Optional SNP GWAS & Gubbins controls
+
+| Input | Type | Default | Description |
+|---|---:|---:|---|
+| `do_snp_gwas` | `Boolean` | `false` | Enables reference-based SNP calling with Snippy & SNP association testing with pyseer. |
+| `do_gubbins` | `Boolean` | `false` | Enables optional Gubbins recombination assessment/filtering for the SNP branch. This is only used when `do_snp_gwas=true`. |
+| `snp_min_qual` | `Float` | `20.0` | Minimum SNP quality retained from the Snippy/core VCF. |
+| `container_backend` | `String` | `docker` | Backend label recorded in the report/provenance. |
+
+Use SNP GWAS for mutation-mediated phenotypes, such as many MTBC drug-resistance traits. For recombining bacteria, enable Gubbins when recombinant blocks may inflate SNP associations. For highly clonal organisms or test runs, keeping `do_gubbins=false` is usually simpler.
+
+---
+
+## Annotation engine
+
+The default annotation engine is **Prokka**. To use Bakta, set:
+
+```json
+{
+  "rMAP_GWAS.use_bakta": true,
+  "rMAP_GWAS.bakta_docker": "gmboowa/rmap-gwas-bakta-db:light-0.1",
+  "rMAP_GWAS.bakta_db": "/opt/bakta/db-light"
+}
 ```
 
-Recommended columns:
+Bakta mode requires a compatible Bakta database available inside the selected container or mounted at the path given by `bakta_db`.
+
+---
+
+## Reference package inputs
+
+The workflow always extracts reference files from a species-specific reference Docker image. A non-empty GenBank file is required for reference annotation rescue. A reference FASTA is additionally required when `do_snp_gwas=true`.
+
+| Input | Type | Default | Description |
+|---|---:|---:|---|
+| `reference_docker` | `String` | `gmboowa/rmap-gwas-mtbc-refs:2026.06` | Docker image containing the species reference package. |
+| `reference_species` | `String` | `*Mycobacterium tuberculosis*` | Species label recorded in the report. |
+| `reference_name` | `String` | `MTBC_2026_06` | Reference package name recorded in the report. |
+
+The WDL searches common paths such as:
 
 ```text
-rank
-feature_id
-feature_type
-gene_name
-product
-contig
-position
-nearest_gene
-case_present
-case_total
-case_frequency
-control_present
-control_total
-control_frequency
-enriched_in
-beta
-odds_ratio
-pyseer_pvalue
-q_value
-bonferroni_threshold
-annotation_source
-samples_with_feature
-notes
-priority_score
+/opt/rmap-gwas/refs/reference.fasta
+/opt/rmap-gwas/refs/reference.gff
+/opt/rmap-gwas/refs/reference.genbank
+/opt/rmap-gwas/refs/mtbc/reference.fasta
+/opt/rmap-gwas/refs/mtbc/reference.gff
+/opt/rmap-gwas/refs/mtbc/reference.genbank
+/opt/rmap-gwas/refs/kpneumo/reference.fasta
+/opt/rmap-gwas/refs/kpneumo/reference.gff
+/opt/rmap-gwas/refs/kpneumo/reference.genbank
+/refs/reference.fasta
+/refs/reference.gff
+/refs/reference.genbank
+/data/reference.fasta
+/data/reference.gff
+/data/reference.genbank
+```
+
+The reference image may also define these environment variables:
+
+```text
+RMAP_GWAS_REFERENCE_FASTA
+RMAP_GWAS_REFERENCE_GFF
+RMAP_GWAS_REFERENCE_GENBANK
 ```
 
 ---
 
-## Enrichment interpretation
+## Runtime controls
 
-A feature is reported as **case-enriched** when:
+The WDL exposes task-level CPU, memory & disk settings. Defaults are test friendly & may need to be increased for larger cohorts.
 
-```text
-case_frequency > control_frequency
-beta > 0
-```
+| Resource group | Default threads | Default memory | Default disk |
+|---|---:|---:|---:|
+| fastp | `4` | `8 GB` | `50 GB` |
+| assembly | `4` | `32 GB` | `200 GB` |
+| annotation | `4` | `16 GB` | `100 GB` |
+| pangenome | `4` | `32 GB` | `300 GB` |
+| GWAS | `4` | `32 GB` | `300 GB` |
+| SNP GWAS | uses `gwas_threads` | uses `gwas_memory_gb` | `300 GB` |
+| Gubbins | `4` | `16 GB` | `300 GB` |
 
-A feature is reported as **control-enriched** when:
-
-```text
-control_frequency > case_frequency
-beta < 0
-```
-
-If the direction from frequencies & model beta disagree, the feature is flagged as:
-
-```text
-Check manually
-```
+For full microbial GWAS cohorts, Panaroo, Mash, pyseer, SNP calling & Gubbins are the most likely steps to require additional memory, disk, or runtime.
 
 ---
 
-## Priority scoring
+## Default Docker images
 
-The final report should not rank hits by p-value alone. A suggested priority score is:
-
-```text
-priority_score =
-  -log10(q_value)
-  + abs(log2_odds_ratio)
-  + annotation_weight
-  + recurrence_weight
-```
-
-Suggested weights:
-
-```text
-annotation_weight = 2 if feature is inside a named CDS or known AMR/virulence/MGE gene
-annotation_weight = 1 if feature is near a gene
-recurrence_weight = 1 if feature is present in at least 5 cases or 5 controls
-```
-
-Features with very low frequency, poor annotation, or inconsistent enrichment direction should be deprioritized.
+| Step | Default image |
+|---|---|
+| fastp | `quay.io/biocontainers/fastp:0.23.4--hadf994f_2` |
+| Shovill | `quay.io/biocontainers/shovill:1.1.0--hdfd78af_1` |
+| QUAST | `staphb/quast:5.2.0` |
+| Prokka | `staphb/prokka:1.14.6` |
+| Bakta | `gmboowa/rmap-gwas-bakta-db:light-0.1` |
+| Panaroo | `quay.io/biocontainers/panaroo:1.5.2--pyhdfd78af_0` |
+| Mash / pyseer / Python utilities | `gmboowa/rmap-gwas-pyseer-annotate:0.2` |
+| Snippy | `staphb/snippy:4.6.0` |
+| Gubbins | `staphb/gubbins:latest` |
+| Reference package | `gmboowa/rmap-gwas-mtbc-refs:2026.06` |
 
 ---
 
-## HTML report sections
+## Running locally with Cromwell
 
-The final `rMAP_GWAS_report.html` should include:
+Validate the WDL if you have `womtool` available:
 
-1. Run overview
-2. Input cohort summary
-3. Case/control balance
-4. Read QC & trimming summary
-5. Assembly QC summary
-6. Annotation & pangenome summary
-7. Population structure summary
-8. GWAS model summary
-9. Manhattan plot
-10. QQ plot
-11. Top-priority hits
-12. Case-enriched hits
-13. Control-enriched hits
-14. Annotated gene-level associations
-15. Annotated unitig/SNP-level associations
-16. Warnings & limitations
-17. Downloads & provenance
+```bash
+java -jar womtool.jar validate rMAP_GWAS.wdl
+```
+
+Run with Cromwell:
+
+```bash
+java -jar cromwell.jar run rMAP_GWAS.wdl -i inputs.json
+```
+
+For local Cromwell runs, make sure Docker is running & that your input FASTQ paths are accessible to the execution environment.
 
 ---
 
-## Minimum viable version
+## Main workflow outputs
 
-The first stable version should implement:
-
-```text
-FASTP
-FASTQC
-MultiQC
-Shovill
-QUAST
-Bakta or Prokka
-Panaroo
-Mash
-unitig-caller
-pyseer unitig GWAS
-pyseer gene GWAS
-hit annotation
-priority scoring
-portable HTML reporting
-```
-
-The reference-based SNP GWAS branch can be added later as an optional module.
-
----
-
-## Important limitations
-
-Microbial GWAS results can be confounded by:
-
-- clonal population structure
-- recombination
-- case/control imbalance
-- phenotype misclassification
-- outbreak overrepresentation
-- low sample size
-- low-frequency features
-- poor genome assemblies
-- incomplete gene annotation
-- plasmid fragmentation in short-read assemblies
-
-The workflow should warn users when:
-
-```text
-number of cases < 10
-number of controls < 10
-```
-
-The workflow should also issue a caution when:
-
-```text
-number of cases < 50 or number of controls < 50
-```
-
-because underpowered microbial GWAS can produce unstable associations.
+| Output | Description |
+|---|---|
+| `phenotype_tsv` | Binary phenotype table used by pyseer. |
+| `phenotype_legend_tsv` | Case/control display legend used by the report. |
+| `sample_groups_tsv` | Sample-level group and display-label table. |
+| `trimmed_read1s`, `trimmed_read2s` | fastp-trimmed paired-end reads. |
+| `assemblies` | Shovill contig FASTA files. |
+| `quast_reports` | Per-sample QUAST report TSV files. |
+| `gffs`, `gbks`, `faas`, `ffns` | Per-sample annotation outputs from Prokka or Bakta. |
+| `gene_presence_absence_csv` | Panaroo pangenome gene presence/absence CSV. |
+| `gene_presence_absence_rtab` | pyseer-compatible gene presence/absence matrix. |
+| `mash_distances` | Square Mash distance matrix used by pyseer. |
+| `population_pca_svg` | Mash-based PCoA plot. |
+| `kinship_heatmap_svg` | Mash distance/kinship heatmap. |
+| `population_structure_summary` | Population-structure summary table. |
+| `pyseer_gene_assoc` | Raw pyseer gene presence/absence association results. |
+| `raw_top_priority_hits` | Unannotated prioritized gene hits. |
+| `raw_all_significant_hits` | Unannotated significant gene hits. |
+| `top_priority_hits` | GenBank-annotated top-priority gene hits. |
+| `all_significant_hits` | GenBank-annotated significant gene hits. |
+| `reference_annotation_summary` | Summary of GenBank annotation rescue. |
+| `enrichment_summary` | Case/control enrichment summary for gene hits. |
+| `qq_plot_svg` | Gene GWAS QQ plot. |
+| `manhattan_plot_svg` | Gene presence/absence Manhattan-style plot. |
+| `plot_summary` | Gene GWAS plot summary. |
+| `reference_fasta`, `reference_gff`, `reference_genbank` | Reference files extracted from the reference Docker image. |
+| `snp_vcf` | SNP VCF from the SNP branch, or a placeholder if SNP GWAS was not run. |
+| `pyseer_snp_assoc` | Raw pyseer SNP association results, or a placeholder if SNP GWAS was not run. |
+| `snp_top_hits` | Prioritized SNP hits, or a placeholder if SNP GWAS was not run. |
+| `snp_all_significant_hits` | All significant SNP hits, or a placeholder if SNP GWAS was not run. |
+| `snp_summary` | SNP GWAS summary. |
+| `snp_manhattan_plot_svg` | SNP GWAS Manhattan plot, or a not-run placeholder. |
+| `snp_qq_plot_svg` | SNP GWAS QQ plot, or a not-run placeholder. |
+| `snp_plot_summary` | SNP plot summary. |
+| `gubbins_summary` | Gubbins status & filtering summary. |
+| `gubbins_filtered_alignment` | Gubbins filtered alignment, or a placeholder if not run. |
+| `gubbins_recombination_gff` | Gubbins recombination GFF, or a placeholder if not run. |
+| `gubbins_log` | Gubbins log, or a not-run log. |
+| `gubbins_filtered_vcf` | Gubbins-filtered SNP VCF, or a placeholder if not run. |
+| `html_report` | Integrated offline HTML report. |
+| `run_provenance` | JSON provenance file recording workflow configuration & selected reference/container settings. |
 
 ---
 
-## Repository structure
+## HTML report contents
+
+The generated report is designed for collaborators who need interpretable results rather than raw workflow logs. Current report sections include:
+
+1. **Phenotype legend & coding**
+2. **AMR phenotype and association scope**
+3. **Workflow architecture**
+4. **Run configuration**
+5. **Top-hit GenBank annotation rescue**
+6. **Population structure**
+7. **Gene presence/absence GWAS plots**
+8. **SNP marker GWAS**
+9. **Optional Gubbins recombination assessment**
+10. **Top priority gene presence/absence GWAS hits**
+11. **All significant gene presence/absence hits**
+12. **Reference annotation confidence guide**
+13. **Input validation**
+14. **Panaroo summary**
+15. **Interpretation guidance**
+16. **Key output files**
+
+The key output file cards in the HTML report are downloadable from within the report.
+
+---
+
+## Interpretation guidance
+
+rMAP-GWAS reports **statistical associations**, not proven causal mechanisms or clinical diagnostic calls.
+
+Important interpretation checks include:
+
+- Confirm that `groups` encodes the intended binary phenotype correctly.
+- Confirm that `phenotype_display_values` matches the biological contrast shown in the report.
+- Review case/control balance before interpreting associations.
+- Review Mash PCoA & kinship plots for lineage or outbreak clustering.
+- For AMR phenotypes, distinguish phenotypic resistance/susceptibility from gene carriage.
+- For mutation-mediated resistance, consider enabling SNP GWAS.
+- For recombining bacteria, consider enabling Gubbins for SNP analyses.
+- Treat low-confidence GenBank rescue annotations as tentative.
+- Validate candidate markers in independent datasets before biological or public-health interpretation.
+
+The workflow warns when case or control counts are small. Very small test runs are useful for testing execution & report generation but should not be treated as final GWAS evidence.
+
+---
+
+## Recommended cohort metadata
+
+A practical Terra metadata table should include at least:
+
+| Column | Example | Purpose |
+|---|---|---|
+| sample ID | `sample_001` | Entity ID / sample name. |
+| read1 | `~/.../sample_001_R1.fastq.gz` | Forward read. |
+| read2 | `~/.../sample_001_R2.fastq.gz` | Reverse read. |
+| group | `case` or `control` | Binary GWAS class. |
+| phenotype display column | `blood`, `sputum`, `resistant`, `susceptible` | Biological label for the report. |
+| species or lineage | `MTBC`, `*K. pneumoniae*`, lineage/ST | Helps interpret population structure. |
+| source country/site/date | optional | Helps detect sampling imbalance & outbreak clusters. |
+
+Only the first four fields are required by the WDL. Additional metadata should be preserved for interpretation & reporting.
+
+---
+
+## Troubleshooting
+
+### Input validation fails
+
+Check that:
+
+- `sample_names`, `read1s`, `read2s` &  `groups` have the same length.
+- Sample names are unique.
+- Sample names do not contain whitespace.
+- `groups` contains recognizable binary labels.
+- `phenotype_display_values`, if provided, has the same length as `sample_names`.
+
+### pyseer fails with distances
+
+For small or highly imbalanced test cohorts, the pyseer null model can fail with distance correction. The default `pyseer_no_distances_fallback=true` retries with `--no-distances` so execution can complete. For final analyses, inspect population structure carefully & consider larger, better-balanced cohorts.
+
+### SNP GWAS fails
+
+SNP GWAS requires a non-empty reference FASTA extracted from `reference_docker`. Confirm that the reference image contains a valid FASTA & GenBank file.
+
+### Bakta fails
+
+Confirm that `use_bakta=true` is intentional & that `bakta_db` points to a database path available inside the selected Bakta container.
+
+### Gubbins is not run
+
+Gubbins only runs when both of these are true:
+
+```json
+{
+  "rMAP_GWAS.do_snp_gwas": true,
+  "rMAP_GWAS.do_gubbins": true
+}
+```
+
+If SNP GWAS is disabled, the workflow produces Gubbins placeholder outputs for report completeness.
+
+---
+
+## Repository layout suggestion
 
 ```text
 rMAP-GWAS/
-├── README.md
-├── LICENSE
 ├── rMAP_GWAS.wdl
+├── README.md
 ├── inputs/
-│   ├── example_inputs.json
-│   └── example_covariates.tsv
-├── docker/
-│   ├── rmap-gwas-pyseer-annotate/
-│   │   └── Dockerfile
-│   └── rmap-gwas-report/
-│       └── Dockerfile
-├── scripts/
-│   ├── validate_inputs.py
-│   ├── prepare_phenotypes.py
-│   ├── annotate_hits.py
-│   ├── prioritize_hits.py
-│   ├── make_gwas_plots.py
-│   └── build_html_report.py
-├── templates/
-│   └── rmap_gwas_report_template.html
+│   └── example.inputs.json
 ├── docs/
-│   ├── workflow_overview.md
-│   ├── input_specification.md
-│   └── output_interpretation.md
-├── test_data/
-│   └── README.md
-└── examples/
-    └── submission_notes.md
+│   └── index.html
+└── test-data/
+    └── README.md
 ```
-
----
-
-## Installation & execution
-
-This repository is designed for execution with WDL-compatible engines such as:
-
-- Cromwell
-- wdl
-- Docker
-
-Example Cromwell command:
-
-```bash
-java -jar cromwell.jar run rMAP_GWAS.wdl -i inputs/example_inputs.json
-```
----
-## Docker images used by rMAP-GWAS
-
-rMAP-GWAS is fully containerized. Each major workflow step is controlled by a Docker image input, so users can run the same WDL across local Cromwell, cloud Cromwell, or other WDL-compatible execution environments.
-
-### Core workflow Docker images
-
-| WDL input variable      | Default Docker image                                | Main tools / role                     | Workflow stage                                                                    |
-| ----------------------- | --------------------------------------------------- | ------------------------------------- | --------------------------------------------------------------------------------- |
-| `fastp_docker`          | `quay.io/biocontainers/fastp:0.23.4--hadf994f_2`    | `fastp`                               | Read trimming & FASTQ quality control                                           |
-| `shovill_docker`        | `quay.io/biocontainers/shovill:1.1.0--hdfd78af_1`   | `shovill`, SPAdes backend             | De novo genome assembly                                                           |
-| `quast_docker`          | `staphb/quast:5.2.0`                                | `QUAST`                               | Assembly quality assessment                                                       |
-| `prokka_docker`         | `staphb/prokka:1.14.6`                              | `Prokka`                              | Genome annotation & GFF generation                                              |
-| `panaroo_docker`        | `quay.io/biocontainers/panaroo:1.5.2--pyhdfd78af_0` | `Panaroo`                             | Pangenome construction & gene presence/absence matrix generation                |
-| `mash_docker`           | `gmboowa/rmap-gwas-pyseer-annotate:0.2`             | `Mash`, Python utilities              | Pairwise genome distance matrix generation                                        |
-| `pyseer_docker`         | `gmboowa/rmap-gwas-pyseer-annotate:0.2`             | `pyseer`                              | Gene presence/absence GWAS                                                        |
-| `python_docker`         | `gmboowa/rmap-gwas-pyseer-annotate:0.2`             | Python reporting and table utilities  | Validation, phenotype generation, prioritization, plots, and HTML report creation |
-| `hit_annotation_docker` | `gmboowa/rmap-gwas-pyseer-annotate:0.2`             | Python post-GWAS annotation utilities | GenBank-based annotation rescue of top GWAS hits                                  |
-
-### Species-specific reference Docker images
-
-Species-specific reference images provide curated reference files used for provenance tracking & post-GWAS annotation rescue. Each reference image is expected to expose a reference GenBank file, preferably through:
-
-```text
-RMAP_GWAS_REFERENCE_GENBANK=/opt/rmap-gwas/refs/reference.genbank
-```
-
-The same rMAP-GWAS WDL can therefore be used across bacterial species by changing the `reference_docker`, `reference_name`, & `reference_species` inputs. The value in the `Species / complex` column can be used as `reference_species`.
-
-| Pathogen group | Species / complex                    | Suggested `reference_docker`                  | Suggested `reference_name`                 |
-| -------------- | ------------------------------------ | --------------------------------------------- | ------------------------------------------ |
-| MTBC           | *Mycobacterium tuberculosis* complex | `gmboowa/rmap-gwas-mtbc-refs:2026.06`         | `MTBC_2026_06` (`GCF_000195955.2`)         |
-| ESKAPEE        | *Enterococcus faecium*               | `gmboowa/rmap-gwas-efaecium-refs:2026.06`     | `EFAECIUM_2026_06` (`GCF_000174395.2`)     |
-| ESKAPEE        | *Staphylococcus aureus*              | `gmboowa/rmap-gwas-saureus-refs:2026.06`      | `SAUREUS_2026_06` (`GCF_000013425.1`)      |
-| ESKAPEE        | *Klebsiella pneumoniae*              | `gmboowa/rmap-gwas-kpneumo-refs:2026.06`      | `KPNEUMO_2026_06` (`GCF_000240185.1`)      |
-| ESKAPEE        | *Acinetobacter baumannii*            | `gmboowa/rmap-gwas-abaumannii-refs:2026.06`   | `ABAUMANNII_2026_06` (`GCF_000015425.1`)   |
-| ESKAPEE        | *Pseudomonas aeruginosa*             | `gmboowa/rmap-gwas-paeruginosa-refs:2026.06`  | `PAERUGINOSA_2026_06` (`GCF_000006765.1`)  |
-| ESKAPEE        | *Enterobacter cloacae*               | `gmboowa/rmap-gwas-enterobacter-refs:2026.06` | `ENTEROBACTER_2026_06` (`GCF_000025565.1`) |
-| ESKAPEE        | *Escherichia coli*                   | `gmboowa/rmap-gwas-ecoli-refs:2026.06`        | `ECOLI_2026_06` (`GCF_000005845.2`)        |
-
-### Reference image contents
-
-Each species-specific reference image should contain at minimum:
-
-| File type                    | Recommended path                              | Purpose                                                                  |
-| ---------------------------- | --------------------------------------------- | ------------------------------------------------------------------------ |
-| Reference FASTA              | `/opt/rmap-gwas/refs/reference.fasta`         | Reference genome sequence                                                |
-| Reference GFF                | `/opt/rmap-gwas/refs/reference.gff`           | Reference feature coordinates                                            |
-| Reference GenBank            | `/opt/rmap-gwas/refs/reference.genbank`       | Gene, locus tag & product annotation for post-GWAS hit interpretation |
-| Optional trusted annotations | `/opt/rmap-gwas/refs/trusted_annotations.tsv` | Curated gene/product names or priority AMR/virulence annotations         |
-
-Recommended environment variables inside each reference image:
-
-```text
-RMAP_GWAS_REFERENCE_FASTA=/opt/rmap-gwas/refs/reference.fasta
-RMAP_GWAS_REFERENCE_GFF=/opt/rmap-gwas/refs/reference.gff
-RMAP_GWAS_REFERENCE_GENBANK=/opt/rmap-gwas/refs/reference.genbank
-RMAP_GWAS_TRUSTED_ANNOTATIONS=/opt/rmap-gwas/refs/trusted_annotations.tsv
-```
-
-### Example reference configuration
-
-For an MTBC run:
-
-```text
-reference_docker  = "gmboowa/rmap-gwas-mtbc-refs:2026.06"
-reference_name    = "MTBC_2026_06"
-reference_species = "Mycobacterium tuberculosis complex"
-```
-
-For a *Klebsiella pneumoniae* run:
-
-```text
-reference_docker  = "gmboowa/rmap-gwas-kpneumo-refs:2026.06"
-reference_name    = "KPNEUMO_2026_06"
-reference_species = "Klebsiella pneumoniae"
-```
-
-### Notes
-
-* The workflow uses Prokka-generated GFF files for Panaroo pangenome construction.
-* Panaroo gene clusters may appear as IDs such as `group_2270`.
-* The post-GWAS annotation rescue step maps prioritized Panaroo gene clusters back to the supplied species-specific GenBank reference, where possible.
-* The final HTML report includes GWAS hit tables, reference annotation rescue results, QQ plot, Manhattan-style feature plot & run provenance.
-* Docker image inputs can be updated as and when needed.
-
 
 ---
 
 ## Citation
 
-If you use `rMAP-GWAS`, please cite this repository & the core tools used in your analysis. A formal citation will be added once the workflow is released.
-
+If you use rMAP-GWAS, cite this repository & the underlying tools used in the workflow, including fastp, Shovill, QUAST, Prokka or Bakta, Panaroo, Mash, pyseer, Snippy & Gubbins where applicable.
 
 
 ---
 
 ## License
 
-This project is released under the MIT License.
-
----
-
-## Disclaimer
-
-`rMAP-GWAS` is intended for research & surveillance support. GWAS associations require careful interpretation & should be validated using independent datasets, biological evidence & where appropriate, experimental or epidemiological follow-up.
+Add the project license here, for example MIT, Apache-2.0, or another license selected by the repository owner.
