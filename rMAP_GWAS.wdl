@@ -72,6 +72,7 @@ workflow rMAP_GWAS {
 
     Int fastp_disk_gb = 50
     Int assembly_disk_gb = 200
+    Int annotation_disk_gb = 100
     Int pangenome_disk_gb = 300
     Int gwas_disk_gb = 300
     Int snp_disk_gb = 300
@@ -82,6 +83,12 @@ workflow rMAP_GWAS {
     String shovill_docker = "quay.io/biocontainers/shovill:1.1.0--hdfd78af_1"
     String quast_docker = "staphb/quast:5.2.0"
     String prokka_docker = "staphb/prokka:1.14.6"
+    # Annotation engine control. Prokka remains the default to preserve existing runs.
+    # Set use_bakta=true to use Bakta instead; the Bakta image must include a compatible database
+    # or bakta_db must point to a mounted database path available inside the container.
+    Boolean use_bakta = false
+    String bakta_docker = "gmboowa/rmap-gwas-bakta-db:light-0.1"
+    String bakta_db = "/opt/bakta/db-light"
     String panaroo_docker = "quay.io/biocontainers/panaroo:1.5.2--pyhdfd78af_0"
     # Combined linux/amd64 image for local Colima testing and Cromwell execution.
     # Contains pyseer, mash, Python, pandas, numpy, scipy, statsmodels, scikit-learn and tqdm.
@@ -108,6 +115,7 @@ workflow rMAP_GWAS {
   # group=case/control and phenotype_display_values for the biological meaning.
   String case_label = "case"
   String control_label = "control"
+  String annotation_engine = if use_bakta then "Bakta" else "Prokka"
 
   # Use sample-set arrays directly.
   Array[String]+ all_sample_names = sample_names
@@ -178,19 +186,39 @@ workflow rMAP_GWAS {
         docker = quast_docker
     }
 
-    call PROKKA_ANNOTATE {
-      input:
-        sample_name = all_sample_names[i],
-        assembly = SHOVILL_ASSEMBLE.contigs_fasta,
-        threads = annotation_threads,
-        memory_gb = annotation_memory_gb,
-        docker = prokka_docker
+    if (!use_bakta) {
+      call PROKKA_ANNOTATE {
+        input:
+          sample_name = all_sample_names[i],
+          assembly = SHOVILL_ASSEMBLE.contigs_fasta,
+          threads = annotation_threads,
+          memory_gb = annotation_memory_gb,
+          docker = prokka_docker
+      }
+    }
+
+    if (use_bakta) {
+      call BAKTA_ANNOTATE {
+        input:
+          sample_name = all_sample_names[i],
+          assembly = SHOVILL_ASSEMBLE.contigs_fasta,
+          threads = annotation_threads,
+          memory_gb = annotation_memory_gb,
+          disk_gb = annotation_disk_gb,
+          docker = bakta_docker,
+          bakta_db = bakta_db
+      }
     }
   }
 
+  Array[File] annotation_gffs = if use_bakta then select_all(BAKTA_ANNOTATE.gff) else select_all(PROKKA_ANNOTATE.gff)
+  Array[File] annotation_gbks = if use_bakta then select_all(BAKTA_ANNOTATE.gbk) else select_all(PROKKA_ANNOTATE.gbk)
+  Array[File] annotation_faas = if use_bakta then select_all(BAKTA_ANNOTATE.faa) else select_all(PROKKA_ANNOTATE.faa)
+  Array[File] annotation_ffns = if use_bakta then select_all(BAKTA_ANNOTATE.ffn) else select_all(PROKKA_ANNOTATE.ffn)
+
   call PANAROO_PANGENOME {
     input:
-      gffs = PROKKA_ANNOTATE.gff,
+      gffs = annotation_gffs,
       threads = pangenome_threads,
       memory_gb = pangenome_memory_gb,
       disk_gb = pangenome_disk_gb,
@@ -240,6 +268,7 @@ workflow rMAP_GWAS {
       pyseer_gene_assoc = PYSEER_GENE_GWAS.pyseer_gene_assoc,
       significance_alpha = significance_alpha,
       output_prefix = output_prefix,
+      annotation_engine = annotation_engine,
       python_docker = python_docker
   }
 
@@ -355,6 +384,7 @@ workflow rMAP_GWAS {
       pan_genome_reference = PANAROO_PANGENOME.pan_genome_reference,
       reference_genbank = EXTRACT_REFERENCE_GENBANK_FROM_DOCKER.reference_genbank,
       output_prefix = output_prefix,
+      annotation_engine = annotation_engine,
       python_docker = hit_annotation_docker
   }
 
@@ -405,6 +435,7 @@ workflow rMAP_GWAS {
       reference_docker = reference_docker,
       reference_species = reference_species,
       reference_name = reference_name,
+      annotation_engine = annotation_engine,
       python_docker = python_docker
   }
 
@@ -416,7 +447,10 @@ workflow rMAP_GWAS {
     Array[File] trimmed_read2s = FASTP_TRIM.trimmed_read2
     Array[File] assemblies = SHOVILL_ASSEMBLE.contigs_fasta
     Array[File] quast_reports = QUAST_ASSEMBLY_QC.quast_report_tsv
-    Array[File] gffs = PROKKA_ANNOTATE.gff
+    Array[File] gffs = annotation_gffs
+    Array[File] gbks = annotation_gbks
+    Array[File] faas = annotation_faas
+    Array[File] ffns = annotation_ffns
     File gene_presence_absence_csv = PANAROO_PANGENOME.gene_presence_absence_csv
     File gene_presence_absence_rtab = PANAROO_PANGENOME.gene_presence_absence_rtab
     File mash_distances = MASH_DISTANCE_MATRIX.mash_distances
@@ -867,6 +901,79 @@ cp prokka_out/~{sample_name}.ffn ~{sample_name}.ffn
   }
 }
 
+
+task BAKTA_ANNOTATE {
+  input {
+    String sample_name
+    File assembly
+    Int threads
+    Int memory_gb
+    Int disk_gb
+    String docker
+    String bakta_db
+  }
+
+  command <<<
+set -euo pipefail
+export PATH=/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
+
+bakta \
+  --db "~{bakta_db}" \
+  --output bakta_out \
+  --prefix "~{sample_name}" \
+  --threads ~{threads} \
+  --skip-sorf \
+  --force \
+  "~{assembly}"
+
+copy_first_existing() {
+  local out="$1"
+  shift
+  for p in "$@"; do
+    if [ -s "$p" ]; then
+      cp "$p" "$out"
+      return 0
+    fi
+  done
+  return 1
+}
+
+copy_first_existing "~{sample_name}.gff" \
+  "bakta_out/~{sample_name}.gff3" \
+  "bakta_out/~{sample_name}.gff" || {
+    echo "ERROR: Bakta did not produce a GFF/GFF3 file for ~{sample_name}." >&2
+    find bakta_out -maxdepth 2 -type f -print >&2 || true
+    exit 1
+  }
+
+copy_first_existing "~{sample_name}.gbk" \
+  "bakta_out/~{sample_name}.gbff" \
+  "bakta_out/~{sample_name}.gbk" \
+  "bakta_out/~{sample_name}.gb" || : > "~{sample_name}.gbk"
+
+copy_first_existing "~{sample_name}.faa" \
+  "bakta_out/~{sample_name}.faa" || : > "~{sample_name}.faa"
+
+copy_first_existing "~{sample_name}.ffn" \
+  "bakta_out/~{sample_name}.ffn" \
+  "bakta_out/~{sample_name}.fna" || : > "~{sample_name}.ffn"
+  >>>
+
+  output {
+    File gff = "~{sample_name}.gff"
+    File gbk = "~{sample_name}.gbk"
+    File faa = "~{sample_name}.faa"
+    File ffn = "~{sample_name}.ffn"
+  }
+
+  runtime {
+    docker: docker
+    cpu: threads
+    memory: "~{memory_gb} GB"
+    disks: "local-disk ~{disk_gb} HDD"
+  }
+}
+
 task PANAROO_PANGENOME {
   input {
     Array[File] gffs
@@ -1243,6 +1350,7 @@ task PRIORITIZE_GWAS_HITS {
     File pyseer_gene_assoc
     Float significance_alpha
     String output_prefix
+    String annotation_engine
     String python_docker
   }
 
@@ -1259,6 +1367,7 @@ panaroo_csv_path = Path("~{gene_presence_absence_csv}")
 assoc_path = Path("~{pyseer_gene_assoc}")
 alpha = float("~{significance_alpha}")
 prefix = "~{output_prefix}"
+annotation_source = "Panaroo/" + """~{annotation_engine}""".strip()
 
 # Read phenotype coding.
 phenotypes = {}
@@ -1429,7 +1538,7 @@ for row in assoc_rows:
         "pyseer_pvalue": "" if pval is None else f"{pval:.6g}",
         "q_value": "" if qval is None else f"{qval:.6g}",
         "priority_score": f"{priority_score:.4f}",
-        "annotation_source": "Panaroo/Prokka",
+        "annotation_source": annotation_source,
         "notes": ""
     }
     all_rows.append(outrow)
@@ -1609,6 +1718,7 @@ task ANNOTATE_GWAS_HITS_WITH_GENBANK {
     File pan_genome_reference
     File reference_genbank
     String output_prefix
+    String annotation_engine
     String python_docker
   }
 
@@ -1621,6 +1731,7 @@ import csv, re, difflib
 from collections import defaultdict
 
 prefix = "~{output_prefix}"
+annotation_source = "Panaroo/" + """~{annotation_engine}""".strip()
 # Touch optional Panaroo annotation inputs so WDL validators know they are intentional task inputs.
 _ = Path("~{gene_data_csv}")
 _ = Path("~{combined_protein_cds}")
@@ -1906,7 +2017,7 @@ def annotate_row(row):
             row["gene_name"] = match.get("gene")
         if (not row.get("product") or row.get("product", "").lower() in ("hypothetical protein", "unknown")) and match.get("product"):
             row["product"] = match.get("product")
-        row["annotation_source"] = row.get("annotation_source", "Panaroo/Prokka") + "+GenBank"
+        row["annotation_source"] = row.get("annotation_source", annotation_source) + "+GenBank"
 
     # Report display fields: keep the stable Panaroo cluster ID, but provide an interpretable display name.
     # High-confidence matches can be shown as the reference gene; medium/low matches are marked as "-like".
@@ -1930,7 +2041,7 @@ def annotate_row(row):
         interpretation = "Low-confidence GenBank rescue; treat as tentative and keep the Panaroo cluster ID."
     elif gene and gene != feat and not gene.startswith("group_"):
         display_name = gene
-        interpretation = "Displayed from Panaroo/Prokka annotation; no stronger GenBank rescue available."
+        interpretation = "Displayed from " + annotation_source + " annotation; no stronger GenBank rescue available."
     elif ref_locus and conf in ("high", "medium", "low"):
         suffix = "" if conf == "high" else "-like"
         display_name = ref_locus + suffix + " (" + feat + ")"
@@ -1963,6 +2074,7 @@ with open(prefix + "_reference_annotation_summary.tsv", "w") as out:
     out.write(f"reference_cds_parsed\t{len(refs)}\n")
     out.write(f"reference_parse_warning\t{reference_parse_warning}\n")
     out.write(f"panaroo_clusters_parsed\t{len(panaroo_rows)}\n")
+    out.write(f"annotation_engine\t{annotation_source}\n")
     out.write(f"fasta_records_parsed\t{len(fasta_records)}\n")
     out.write(f"top_priority_input\t{Path('~{top_priority_hits}').name}\n")
     out.write(f"all_significant_input\t{Path('~{all_significant_hits}').name}\n")
@@ -3247,6 +3359,7 @@ task MERGE_RMAP_GWAS_REPORT {
     String reference_docker
     String reference_species
     String reference_name
+    String annotation_engine
     String python_docker
   }
 
@@ -3255,12 +3368,13 @@ set -euo pipefail
 export PATH=/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
 python <<'PY'
 from pathlib import Path
-import html, json, csv, datetime, re
+import html, json, csv, datetime, re, base64
 
 prefix = "~{output_prefix}"
 reference_docker = """~{reference_docker}"""
 reference_species = """~{reference_species}"""
 reference_name = """~{reference_name}"""
+annotation_engine = """~{annotation_engine}""".strip() or "Prokka"
 do_snp_gwas = "~{do_snp_gwas}".strip().lower() == "true"
 do_gubbins = "~{do_gubbins}".strip().lower() == "true"
 gwas_mode = """~{gwas_mode}"""
@@ -3316,6 +3430,31 @@ def summary_value(path, key, default=""):
 def read_svg(path):
     txt = read_text(path, limit=450000)
     return txt if txt.lstrip().startswith("<svg") else "<p class=\"empty\">Plot not available.</p>"
+
+
+def data_download_href(path, mime="text/plain;charset=utf-8"):
+    p = Path(path)
+    filename = p.name if str(path) else "output.txt"
+    if not p.exists() or not p.is_file() or p.stat().st_size == 0:
+        return "", filename
+    encoded = base64.b64encode(p.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{encoded}", filename
+
+
+def output_file_card(path, label, description, mime="text/plain;charset=utf-8"):
+    href, filename = data_download_href(path, mime)
+    label = safe_text(label)
+    filename_safe = safe_text(filename)
+    description_safe = safe_text(description)
+    if href:
+        return f'<a class="output-card" href="{safe_text(href)}" download="{filename_safe}" aria-label="Download {filename_safe}"><span class="output-kind">{label}</span><span class="output-title">{filename_safe}</span><span class="output-desc">{description_safe}</span><span class="download-badge">Download</span></a>'
+    return f'<div class="output-card disabled" aria-label="Unavailable output {filename_safe}"><span class="output-kind">{label}</span><span class="output-title">{filename_safe}</span><span class="output-desc">{description_safe}</span><span class="download-badge unavailable">Unavailable</span></div>'
+
+
+def report_download_card(filename):
+    filename_safe = safe_text(filename)
+    onclick = safe_text(f"downloadCurrentReport({json.dumps(filename)})")
+    return f'<button type="button" class="output-card output-button" onclick="{onclick}" aria-label="Download {filename_safe}"><span class="output-kind">Report</span><span class="output-title">{filename_safe}</span><span class="output-desc">Integrated HTML report with phenotype legend, GWAS plots, annotation, and provenance summaries.</span><span class="download-badge">Download</span></button>'
 
 
 def load_legend(path):
@@ -3532,11 +3671,145 @@ def confidence_table_html():
     out.append("</tbody></table></div>")
     return "\n".join(out)
 
+
+
+def is_amr_phenotype(phenotype_name, legend):
+    """Return True when the configured phenotype appears to be an AMR resistance/susceptibility contrast."""
+    blob = " ".join([
+        str(phenotype_name or ""),
+        str(legend.get("case", "") or ""),
+        str(legend.get("control", "") or ""),
+        str(legend.get("case_detail", "") or ""),
+        str(legend.get("control_detail", "") or ""),
+        str(legend.get("metadata_column", "") or "")
+    ]).lower()
+    amr_terms = [
+        "resistance", "resistant", "susceptibility", "susceptible", "non-susceptible",
+        "nonsusceptible", "intermediate", "amr", "antimicrobial", "antibiotic", "drug resistance",
+        "mdr", "xdr", "carbapenem", "beta-lactam", "betalactam", "cephalosporin", "fluoroquinolone",
+        "aminoglycoside", "macrolide", "tetracycline", "colistin", "rifampicin", "isoniazid",
+        "ethambutol", "pyrazinamide", "streptomycin"
+    ]
+    return any(term in blob for term in amr_terms)
+
+
+def phenotype_scope_text(phenotype_tested, case_label, control_label, amr_like):
+    if amr_like:
+        return (
+            f"This run is framed as an AMR GWAS. The primary phenotype is phenotypic resistance versus "
+            f"susceptibility for the configured drug, drug class, or AMR trait. In the pyseer model, "
+            f"{case_label} is coded as 1 and {control_label} is coded as 0. Confirm that resistant isolates "
+            f"are mapped to the case class and susceptible isolates are mapped to the control class before "
+            f"interpreting candidate markers."
+        )
+    return (
+        f"This run tests one explicitly configured binary phenotype only: {phenotype_tested}. "
+        f"The biological contrast used by the model is {case_label} versus {control_label}. "
+        f"For AMR analyses, configure the input metadata so that phenotypically resistant isolates are "
+        f"case=1 and susceptible isolates are control=0."
+    )
+
+
+def amr_guardrail_text(amr_like):
+    base = (
+        "Association results should be interpreted as statistical marker-phenotype associations, not as final "
+        "clinical resistance calls. Gene presence/absence is the primary marker set; optional SNP GWAS adds "
+        "point-mutation markers. Sequencing depth, assembly quality, species background, multiple genes in the "
+        "same antibiotic class, plasmid linkage, and phenotype quality should be reviewed during filtering and "
+        "interpretation."
+    )
+    if amr_like:
+        return "AMR-specific guardrail: " + base
+    return "General guardrail, especially for AMR use cases: " + base
+
+
+def amr_scope_table_html(amr_like):
+    intro = phenotype_scope_text(phenotype_tested, case_label, control_label, amr_like)
+    rows = [
+        (
+            "Phenotype clarity",
+            "One binary phenotype is tested per run using the phenotype TSV supplied to pyseer.",
+            "For AMR, label the contrast explicitly as phenotypically resistant versus susceptible and verify case/control coding before launch."
+        ),
+        (
+            "Gene presence/absence",
+            "The primary GWAS branch tests pangenome gene-cluster presence/absence with population-structure correction.",
+            "A resistance gene found in some susceptible isolates may reflect gene inactivity, expression differences, breakpoint issues, linkage, or phenotype error; interpret enrichment rather than presence alone."
+        ),
+        (
+            "Point mutations",
+            "Point mutations are not represented by gene presence/absence; they are assessed only when the optional SNP GWAS branch is enabled.",
+            "Use do_snp_gwas=true for mutation-mediated resistance, such as many MTBC drug-resistance phenotypes, and interpret SNP hits alongside known resistance catalogs where available."
+        ),
+        (
+            "Species background",
+            "Species labels are recorded as run provenance, but species is not automatically included as a regression covariate in the default model.",
+            "Avoid pooling divergent species without review. Prefer species-specific or lineage-aware analyses when associations may differ by species."
+        ),
+        (
+            "Sequencing depth and assembly quality",
+            "The workflow generates FASTQ/assembly QC outputs, but read depth and assembly quality are not automatically modeled as covariates.",
+            "Filter low-depth or poor-quality samples and inspect gene absence in susceptible/resistant groups before making biological claims."
+        ),
+        (
+            "Multiple resistance genes in the same class",
+            "Prioritized hits are marker-level associations and may be correlated through plasmids, mobile elements, clonal background, or co-carriage.",
+            "For antibiotic-class interpretation, inspect gene co-occurrence and consider class-level summaries or follow-up multivariable models outside this first-pass report."
+        ),
+        (
+            "Population structure and linkage",
+            "Mash distances/MDS and population-structure plots are generated to help assess lineage confounding.",
+            "If resistant and susceptible isolates cluster by lineage or outbreak, treat hits as candidates requiring validation rather than causal resistance determinants."
+        )
+    ]
+    out = [
+        f"<div class=\"callout\"><strong>Configured phenotype:</strong> {safe_text(intro)}</div>",
+        "<div class=\"table-wrap\"><table>",
+        "<thead><tr><th>Jupiter's concern</th><th>Current workflow/report behavior</th><th>Recommended AMR interpretation</th></tr></thead><tbody>"
+    ]
+    for concern, behavior, recommendation in rows:
+        out.append(f"<tr><td>{safe_text(concern)}</td><td>{safe_text(behavior)}</td><td>{safe_text(recommendation)}</td></tr>")
+    out.append("</tbody></table></div>")
+    out.append(
+        "<p class=\"note\"><strong>Practical AMR smoke-test recommendation:</strong> use Prof. Damalie's data as a phenotype-anchored test set by setting the phenotype metadata to resistant/susceptible, running species-aware summaries, enabling SNP GWAS where mutation-mediated resistance is expected, and reviewing gene co-occurrence for each antibiotic class.</p>"
+    )
+    return "\n".join(out)
+
+
+
+def section_tools():
+    return '<div class="section-tools"><a href="#home">Back to Home</a><a href="#top">Back to Top</a></div>'
+
+
+def brief_summary(text):
+    return '<div class="summary"><strong>Brief interpretation:</strong> ' + safe_text(text) + '</div>'
+
+
+def add_section_summaries_and_navigation(doc, summaries):
+    doc = doc.replace('<body>', '<body id="top">', 1)
+    doc = doc.replace('<section class="hero">', '<section class="hero" id="home">', 1)
+    doc = doc.replace('<a href="#pipeline">Pipeline</a><a href="#structure">Population structure</a>', '<a href="#pipeline">Pipeline</a><a href="#run-config">Run config</a><a href="#top-hit">Top hit</a><a href="#structure">Population structure</a>', 1)
+    doc = doc.replace('<div class="card half"><h2><span>03</span> Run configuration</h2>', '<div class="card half" id="run-config"><h2><span>03</span> Run configuration</h2>', 1)
+    doc = doc.replace('<div class="card half"><h2><span>04</span> Top-hit GenBank annotation rescue</h2>', '<div class="card half" id="top-hit"><h2><span>04</span> Top-hit GenBank annotation rescue</h2>', 1)
+    doc = doc.replace('<div class="title">Prokka + Panaroo</div><p>Creates GFF annotations and pangenome gene matrices.</p>', '<div class="title">' + safe_text(annotation_engine) + ' + Panaroo</div><p>Creates GFF annotations and pangenome gene matrices. Prokka remains the default; Bakta can be enabled with <code>use_bakta=true</code>.</p>', 1)
+    doc = doc.replace('container backend recorded as ' + safe_text(container_backend) + '.</div>', 'annotation engine: ' + safe_text(annotation_engine) + '; container backend recorded as ' + safe_text(container_backend) + '.</div>', 1)
+    doc = doc.replace('</nav><div class="callout"><strong>Smoke-test/sample-size note:', '</nav><div class="callout disclaimer"><strong>Automated interpretation disclaimer:</strong> The brief summaries in this report are rule-based supportive guidance for navigation and first-pass review only. Final biological, clinical, or public-health interpretation should be validated by a qualified expert.</div><div class="callout"><strong>Smoke-test/sample-size note:', 1)
+    for section_id, summary in summaries.items():
+        pattern = r'(<div class="card(?: [^"]*)?" id="' + re.escape(section_id) + r'"><h2.*?</h2>)'
+        doc = re.sub(pattern, lambda m: m.group(1) + brief_summary(summary), doc, count=1, flags=re.S)
+    doc = re.sub(r'(</div>)(?=\s*<div class="card)', lambda m: section_tools() + m.group(1), doc)
+    doc = re.sub(r'(</div>)(?=\s*</section>)', lambda m: section_tools() + m.group(1), doc, count=1)
+    return doc
+
 phenotype_rows = read_tsv("~{phenotype_tsv}")
 phenotype_tested = phenotype_rows[0][1] if phenotype_rows and len(phenotype_rows[0]) > 1 else "case_control"
 cases = sum(1 for r in phenotype_rows[1:] if len(r) > 1 and str(r[1]).strip() == "1")
 controls = sum(1 for r in phenotype_rows[1:] if len(r) > 1 and str(r[1]).strip() == "0")
 total = max(0, len(phenotype_rows) - 1)
+amr_like_phenotype = is_amr_phenotype(phenotype_tested, legend)
+phenotype_question = "phenotypic resistance versus susceptibility" if amr_like_phenotype else f"{case_label} versus {control_label}"
+phenotype_scope = phenotype_scope_text(phenotype_tested, case_label, control_label, amr_like_phenotype)
+amr_guardrail = amr_guardrail_text(amr_like_phenotype)
 
 top_header, top_rows = read_tsv_dicts("~{top_priority_hits}")
 snp_top_header, snp_top_rows = read_tsv_dicts("~{snp_top_hits}")
@@ -3583,6 +3856,34 @@ gubbins_status = "requested" if (do_snp_gwas and do_gubbins) else "not requested
 gubbins_effective = gubbins_status_value.replace("_", " ")
 generated = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
+output_cards_html = "\n".join([
+    output_file_card("~{phenotype_legend_tsv}", "Phenotype", "Metadata-derived legend used throughout this report.", "text/tab-separated-values;charset=utf-8"),
+    output_file_card("~{pyseer_gene_assoc}", "GWAS", f"Raw pyseer gene association results. Rows detected: {pyseer_n}.", "text/tab-separated-values;charset=utf-8"),
+    output_file_card("~{pyseer_snp_assoc}", "SNP GWAS", f"Raw pyseer SNP marker association results. Rows detected: {snp_pyseer_n}.", "text/tab-separated-values;charset=utf-8"),
+    output_file_card("~{top_priority_hits}", "Priority", "Ranked top gene hits with reference annotation columns.", "text/tab-separated-values;charset=utf-8"),
+    output_file_card("~{mash_distances}", "Structure", "Square Mash distance matrix used for correction and visualization.", "text/tab-separated-values;charset=utf-8"),
+    report_download_card(prefix + "_report.html"),
+])
+
+download_script = """<script>
+function downloadCurrentReport(filename) {
+  try {
+    const html = '<!doctype html>\n' + document.documentElement.outerHTML;
+    const blob = new Blob([html], {type: 'text/html;charset=utf-8'});
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename || 'rMAP_GWAS_report.html';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (err) {
+    alert('Unable to download the HTML report from this browser session. Use the browser Save As option instead.');
+  }
+}
+</script>"""
+
 snp_section = f"""
 <div class=\"card\" id=\"snp\"><h2><span>06</span> SNP marker GWAS</h2>
 <div class=\"callout\"><strong>SNP branch:</strong> {safe_text(snp_status)}. SNP marker GWAS is intended for mutation-mediated phenotypes, including MTBC drug-resistance traits. Review {safe_text(case_label)}/{safe_text(control_label)} population structure before interpreting SNP hits. Optional Gubbins status: <strong>{safe_text(gubbins_effective)}</strong>.</div>
@@ -3612,9 +3913,12 @@ css = """
 .badges { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 22px; } .badge { border: 1px solid rgba(33,212,253,0.32); background: rgba(7,18,42,0.68); border-radius: 999px; padding: 10px 14px; color: #dff8ff; font-weight: 700; }
 .metrics { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; } .metric { border: 1px solid rgba(255,255,255,0.12); border-radius: 20px; padding: 20px; background: rgba(7,12,31,0.68); } .metric .num { font-size: 42px; font-weight: 900; letter-spacing: -0.05em; } .metric .num.smalltop { font-size: 23px; letter-spacing: -0.02em; line-height: 1.05; } .metric .label { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .08em; font-weight: 800; } .metric .sub { color: var(--muted); font-size: 12px; line-height: 1.35; margin-top: 8px; }
 .nav { display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 0; } .nav a { text-decoration: none; color: #dff7ff; font-weight: 800; font-size: 13px; padding: 10px 13px; border-radius: 12px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.09); }
+.section-tools { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; margin-top: 18px; padding-top: 14px; border-top: 1px solid rgba(148,163,184,.18); } .section-tools a { text-decoration: none; color: #dff7ff; font-weight: 900; font-size: 12px; padding: 8px 11px; border-radius: 999px; background: rgba(33,212,253,0.10); border: 1px solid rgba(33,212,253,0.28); }
+.summary { border-left: 5px solid var(--green); background: rgba(85,239,196,0.09); padding: 14px 16px; border-radius: 14px; color: #eafff9; margin: 0 0 16px; line-height: 1.45; } .disclaimer { border-left-color: var(--green); background: rgba(85,239,196,0.09); color: #eafff9; }
 .grid { display: grid; grid-template-columns: repeat(12,1fr); gap: 20px; margin-top: 22px; } .card { grid-column: span 12; border: 1px solid var(--line); background: var(--panel); border-radius: 24px; padding: 24px; box-shadow: 0 18px 60px rgba(0,0,0,0.25), inset 0 0 30px rgba(255,255,255,0.025); } .card.half { grid-column: span 6; } @media (max-width: 980px) { .card.half { grid-column: span 12; } }
 .card h2 { margin: 0 0 16px; font-size: 24px; letter-spacing: -0.02em; } .card h2 span { color: var(--cyan); text-shadow: 0 0 18px rgba(33,212,253,0.45); } .pipeline { display: grid; grid-template-columns: repeat(6,1fr); gap: 14px; } @media (max-width: 1180px) { .pipeline { grid-template-columns: repeat(3,1fr); } } @media (max-width: 720px) { .pipeline { grid-template-columns: 1fr; } }
 .step { min-height: 140px; padding: 18px; border-radius: 20px; border: 1px solid rgba(33,212,253,0.22); background: linear-gradient(180deg, rgba(25,38,80,.70), rgba(8,12,31,.72)); } .step .idx { color: var(--green); font-weight: 900; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; } .step .title { font-size: 18px; font-weight: 900; margin: 8px 0; color: #fff; } .step p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.45; } .icon { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 15px; background: rgba(33,212,253,0.12); border: 1px solid rgba(33,212,253,0.30); color: var(--cyan); font-size: 20px; font-weight: 900; margin-bottom: 12px; }
+.outputs-frame { width: 100%; max-width: 100%; overflow: hidden; } #outputs { grid-column: 1 / -1; width: 100%; max-width: 100%; overflow: hidden; } .outputs-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: stretch; width: 100%; max-width: 100%; min-width: 0; overflow: visible; } .output-card { min-width: 0; max-width: 100%; min-height: 136px; display: flex; flex-direction: column; gap: 8px; padding: 16px; border-radius: 18px; border: 1px solid rgba(33,212,253,0.28); background: linear-gradient(180deg, rgba(25,38,80,.70), rgba(8,12,31,.72)); color: var(--text); text-decoration: none; text-align: left; cursor: pointer; font: inherit; box-shadow: inset 0 0 22px rgba(255,255,255,0.02); overflow: hidden; } .output-card:hover { transform: translateY(-2px); border-color: rgba(85,239,196,0.65); background: linear-gradient(180deg, rgba(25,50,88,.82), rgba(8,15,36,.84)); } .output-card.disabled { cursor: not-allowed; opacity: .62; } .output-kind { color: var(--green); font-weight: 900; font-size: 11px; letter-spacing: .10em; text-transform: uppercase; } .output-title { display: block; color: #fff; font-size: clamp(15px, 1.35vw, 19px); font-weight: 900; line-height: 1.12; overflow-wrap: anywhere; word-break: break-word; } .output-desc { color: var(--muted); font-size: 13px; line-height: 1.32; overflow-wrap: anywhere; } .download-badge { margin-top: auto; align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; padding: 6px 9px; border-radius: 999px; border: 1px solid rgba(85,239,196,.40); background: rgba(85,239,196,.10); color: #d9fff7; font-size: 11px; font-weight: 900; } .download-badge::before { content: "↓"; font-weight: 900; } .download-badge.unavailable { border-color: rgba(148,163,184,.35); background: rgba(148,163,184,.10); color: #dbeafe; } @media (max-width: 1180px) { .outputs-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } } @media (max-width: 720px) { .outputs-grid { grid-template-columns: 1fr; } }
 .callout { border-left: 5px solid var(--amber); background: rgba(255,209,102,0.10); padding: 16px 18px; border-radius: 14px; color: #fff7dc; margin: 16px 0; } pre { white-space: pre-wrap; background: rgba(3,7,18,0.66); border: 1px solid rgba(148,163,184,0.20); color: #dbeafe; border-radius: 18px; padding: 18px; overflow: auto; } .table-wrap { width: 100%; overflow: auto; border-radius: 18px; border: 1px solid rgba(148,163,184,.22); } table { border-collapse: collapse; width: 100%; min-width: 980px; background: rgba(6,12,30,0.74); font-size: 13px; } th, td { border-bottom: 1px solid rgba(148,163,184,.18); padding: 12px 14px; text-align: left; vertical-align: top; } th { position: sticky; top: 0; background: rgba(16,42,77,.98); color: #e0f2fe; text-transform: uppercase; letter-spacing: .06em; font-size: 11px; } td { color: #e5eefb; } tbody tr:hover { background: rgba(33,212,253,.06); }
 .hit-card { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr; gap: 14px; } @media (max-width: 900px) { .hit-card { grid-template-columns: 1fr; } } .hit-box { border-radius: 18px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.055); padding: 16px; } .hit-box .small { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; font-weight: 800; } .hit-box .big { font-size: 22px; font-weight: 900; margin-top: 6px; color: #fff; word-break: break-word; }
 .top-grid { display: grid; grid-template-columns: repeat(5, minmax(180px, 1fr)); gap: 14px; margin-bottom: 12px; } @media (max-width: 1180px) { .top-grid { grid-template-columns: repeat(2, 1fr); } } @media (max-width: 720px) { .top-grid { grid-template-columns: 1fr; } } .top-card { border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.055); border-radius: 18px; padding: 16px; } .top-rank { color: var(--green); font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: .08em; } .top-name { font-size: 20px; font-weight: 900; line-height: 1.05; margin: 8px 0; word-break: break-word; } .top-label, .top-stats { color: var(--muted); font-size: 12px; line-height: 1.35; } .top-card p { color: #dbeafe; font-size: 13px; line-height: 1.35; }
@@ -3622,8 +3926,9 @@ css = """
 .plot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; } @media (max-width: 1000px) { .plot-grid { grid-template-columns: 1fr; } } .plot svg { width: 100%; height: auto; border-radius: 18px; border: 1px solid rgba(148,163,184,.18); } .empty, .note { color: var(--muted); } .footer { margin-top: 26px; color: var(--muted); text-align: center; font-size: 13px; }
 """
 
-html_doc = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{safe_text(prefix)} | rMAP-GWAS report</title><style>{css}</style></head><body><div class="page"><section class="hero"><div class="hero-grid"><div><div class="kicker">Cromwell workflow report</div><h1><span class="gradient-text">rMAP-GWAS</span></h1><p class="subtitle">Reproducible microbial GWAS from paired-end reads, including gene presence/absence GWAS, optional SNP marker GWAS, population-structure visualization, post-GWAS reference annotation, and ranked association reporting.</p><div class="badges"><span class="badge">Cromwell</span><span class="badge">Dockerized</span><span class="badge">Distance-corrected pyseer</span><span class="badge">Multi-pathogen ready</span><span class="badge">GenBank annotation rescue</span><span class="badge">Optional SNP GWAS</span></div><nav class="nav"><a href="#phenotype">Phenotype legend</a><a href="#pipeline">Pipeline</a><a href="#structure">Population structure</a><a href="#plots">Gene plots</a><a href="#snp">SNP GWAS</a><a href="#gubbins">Recombination</a><a href="#hits">Priority hits</a><a href="#annotation">Reference annotation</a><a href="#validation">Validation</a><a href="#outputs">Outputs</a></nav><div class="callout"><strong>Smoke-test/sample-size note:</strong> This run has {total} samples ({cases} {safe_text(cases_label)} and {controls} {safe_text(controls_label)}). It is useful for workflow validation, but association results should not be treated as final biological or clinical findings without larger cohorts and independent validation.</div></div><div class="metrics"><div class="metric"><div class="label">{safe_text(cases_label)}</div><div class="num">{cases}</div></div><div class="metric"><div class="label">{safe_text(controls_label)}</div><div class="num">{controls}</div></div><div class="metric"><div class="label">Total samples</div><div class="num">{total}</div></div><div class="metric"><div class="label">Top gene hit</div><div class="num smalltop">{safe_text(display_name)}</div><div class="sub">{safe_text(display_subtitle)}</div></div></div></div></section><section class="grid">
-<div class="card" id="phenotype"><h2><span>01</span> Phenotype legend and coding</h2><div class="callout"><strong>Phenotype tested:</strong> Binary phenotype <code>{safe_text(phenotype_tested)}</code>. The report displays the metadata-derived biological contrast throughout the HTML: <strong>{safe_text(case_label)} = 1</strong> and <strong>{safe_text(control_label)} = 0</strong>.</div>{legend_table_html()}</div>
+html_doc = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{safe_text(prefix)} | rMAP-GWAS report</title><style>{css}</style></head><body><div class="page"><section class="hero"><div class="hero-grid"><div><div class="kicker">Cromwell workflow report</div><h1><span class="gradient-text">rMAP-GWAS</span></h1><p class="subtitle">Reproducible microbial GWAS from paired-end reads for one explicitly coded binary phenotype per run, including gene presence/absence GWAS, optional SNP marker GWAS, population-structure visualization, post-GWAS reference annotation, and ranked association reporting.</p><div class="badges"><span class="badge">Cromwell</span><span class="badge">Dockerized</span><span class="badge">Distance-corrected pyseer</span><span class="badge">Multi-pathogen ready</span><span class="badge">Explicit phenotype coding</span><span class="badge">AMR interpretation guardrails</span><span class="badge">GenBank annotation rescue</span><span class="badge">Optional SNP GWAS</span></div><nav class="nav"><a href="#phenotype">Phenotype legend</a><a href="#amr-scope">AMR scope</a><a href="#pipeline">Pipeline</a><a href="#structure">Population structure</a><a href="#plots">Gene plots</a><a href="#snp">SNP GWAS</a><a href="#gubbins">Recombination</a><a href="#hits">Priority hits</a><a href="#annotation">Reference annotation</a><a href="#validation">Validation</a><a href="#outputs">Outputs</a></nav><div class="callout"><strong>GWAS phenotype being tested:</strong> {safe_text(phenotype_scope)}</div><div class="callout"><strong>Association scope:</strong> {safe_text(amr_guardrail)}</div><div class="callout"><strong>Smoke-test/sample-size note:</strong> This run has {total} samples ({cases} {safe_text(cases_label)} and {controls} {safe_text(controls_label)}). It is useful for workflow validation, but association results should not be treated as final biological or clinical findings without larger cohorts and independent validation.</div></div><div class="metrics"><div class="metric"><div class="label">{safe_text(cases_label)}</div><div class="num">{cases}</div></div><div class="metric"><div class="label">{safe_text(controls_label)}</div><div class="num">{controls}</div></div><div class="metric"><div class="label">Total samples</div><div class="num">{total}</div></div><div class="metric"><div class="label">Top gene hit</div><div class="num smalltop">{safe_text(display_name)}</div><div class="sub">{safe_text(display_subtitle)}</div></div></div></div></section><section class="grid">
+<div class="card" id="phenotype"><h2><span>01</span> Phenotype legend and coding</h2><div class="callout"><strong>Phenotype tested:</strong> Binary phenotype <code>{safe_text(phenotype_tested)}</code>. <strong>Configured contrast:</strong> {safe_text(phenotype_question)}. The report displays the metadata-derived biological contrast throughout the HTML: <strong>{safe_text(case_label)} = 1</strong> and <strong>{safe_text(control_label)} = 0</strong>.</div>{legend_table_html()}</div>
+<div class="card" id="amr-scope"><h2><span>01b</span> AMR phenotype and association scope</h2>{amr_scope_table_html(amr_like_phenotype)}</div>
 <div class="card" id="pipeline"><h2><span>02</span> Workflow architecture</h2><div class="pipeline"><div class="step"><div class="icon">01</div><div class="idx">Input</div><div class="title">Sample-set validation</div><p>Checks sample names, paired FASTQs, group labels, and {safe_text(case_label)}/{safe_text(control_label)} balance.</p></div><div class="step"><div class="icon">02</div><div class="idx">QC</div><div class="title">fastp trimming</div><p>Generates cleaned reads plus QC summaries.</p></div><div class="step"><div class="icon">03</div><div class="idx">Assembly</div><div class="title">Shovill</div><p>Builds de novo genome assemblies using safe Cromwell memory handling.</p></div><div class="step"><div class="icon">04</div><div class="idx">Annotation</div><div class="title">Prokka + Panaroo</div><p>Creates GFF annotations and pangenome gene matrices.</p></div><div class="step"><div class="icon">05</div><div class="idx">GWAS</div><div class="title">Mash + pyseer</div><p>Runs population-structure-aware gene and optional SNP association testing.</p></div><div class="step"><div class="icon">06</div><div class="idx">Rescue</div><div class="title">GenBank annotation</div><p>Maps prioritized pangenome/SNP markers to reference GenBank features where possible.</p></div></div></div>
 <div class="card half"><h2><span>03</span> Run configuration</h2><div class="hit-card"><div class="hit-box"><div class="small">Reference name</div><div class="big">{safe_text(reference_name)}</div></div><div class="hit-box"><div class="small">Species</div><div class="big">{safe_text(reference_species)}</div></div><div class="hit-box"><div class="small">Reference Docker</div><div class="big">{safe_text(reference_docker)}</div></div><div class="hit-box"><div class="small">Generated UTC</div><div class="big">{safe_text(generated)}</div></div></div><div class="callout"><strong>Phenotype coding:</strong> {safe_text(case_label)} = 1; {safe_text(control_label)} = 0. GWAS mode: {safe_text(gwas_mode)}; SNP branch: {safe_text(snp_status)}; Gubbins recombination module: {safe_text(gubbins_effective)}; container backend recorded as {safe_text(container_backend)}.</div></div>
 <div class="card half"><h2><span>04</span> Top-hit GenBank annotation rescue</h2><div class="hit-card"><div class="hit-box"><div class="small">Display name</div><div class="big">{safe_text(display_name)}</div></div><div class="hit-box"><div class="small">Pangenome/SNP marker</div><div class="big">{safe_text(feature_id)}</div></div><div class="hit-box"><div class="small">Reference locus / gene</div><div class="big">{safe_text((reference_locus_tag or 'not matched') + ' / ' + (reference_gene or 'not assigned'))}</div></div><div class="hit-box"><div class="small">Confidence</div><div class="big"><span class="conf {confidence_badge_class(annotation_confidence)}">{safe_text(annotation_confidence or 'none')}</span></div></div></div><div class="callout"><strong>Top-hit interpretation:</strong> {safe_text(interpretation_note)} Reference identity: {safe_text(reference_identity or 'NA')}%; reference coverage: {safe_text(reference_coverage or 'NA')}%. Product: {safe_text(reference_product or product or 'not assigned')}.</div></div>
@@ -3634,23 +3939,51 @@ html_doc = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta 
 <div class="card" id="hits"><h2><span>07</span> Top priority gene presence/absence GWAS hits</h2>{top_cards(top_rows, 5)}<h3>Prioritized hit table</h3>{table_from_tsv('~{top_priority_hits}', max_rows=100, reorder=True)}</div>
 <div class="card" id="allhits"><h2><span>08</span> All significant gene presence/absence hits</h2>{table_from_tsv('~{all_significant_hits}', max_rows=100, reorder=True)}</div>
 <div class="card" id="annotation"><h2><span>09</span> Reference annotation confidence guide</h2><div class="callout"><strong>Annotation caveat:</strong> Reference annotation rescue is intended to improve interpretability of pangenome/SNP markers. Low-confidence matches should not be treated as definitive gene calls. Candidate hits should be validated in independent datasets and interpreted in the context of {safe_text(case_label)} versus {safe_text(control_label)}.</div>{confidence_table_html()}<h3>Reference annotation summary</h3><pre>{safe_text(annotation_summary_txt)}</pre></div>
-<div class="card half" id="validation"><h2><span>10</span> Input validation</h2><pre>{safe_text(validation_txt)}</pre></div><div class="card half" id="panaroo"><h2><span>11</span> Panaroo summary</h2><pre>{safe_text(panaroo_txt)}</pre></div><div class="card half" id="interpretation"><h2><span>12</span> Interpretation guidance</h2><div class="callout">Microbial GWAS can be confounded by lineage structure, outbreak clustering, recombination, phenotype misclassification, and small sample size. Use the population-structure plots and, for recombining species, consider enabling Gubbins to reduce recombinant-block-driven SNP associations. Interpret candidate markers as associations with {safe_text(case_label)} versus {safe_text(control_label)}, not as proven causal determinants.</div></div>
-<div class="card" id="outputs"><h2><span>13</span> Key output files</h2><div class="pipeline"><div class="step"><div class="idx">Phenotype</div><div class="title">{safe_text(Path('~{phenotype_legend_tsv}').name)}</div><p>Metadata-derived legend used throughout this report.</p></div><div class="step"><div class="idx">GWAS</div><div class="title">{safe_text(Path('~{pyseer_gene_assoc}').name)}</div><p>Raw pyseer gene association results. Rows detected: {pyseer_n}.</p></div><div class="step"><div class="idx">SNP GWAS</div><div class="title">{safe_text(Path('~{pyseer_snp_assoc}').name)}</div><p>Raw pyseer SNP marker association results. Rows detected: {snp_pyseer_n}.</p></div><div class="step"><div class="idx">Priority</div><div class="title">{safe_text(Path('~{top_priority_hits}').name)}</div><p>Ranked top gene hits with reference annotation columns.</p></div><div class="step"><div class="idx">Structure</div><div class="title">{safe_text(Path('~{mash_distances}').name)}</div><p>Square Mash distance matrix used for correction and visualization.</p></div><div class="step"><div class="idx">Report</div><div class="title">{safe_text(prefix)}_report.html</div><p>Integrated HTML report with phenotype legend, GWAS plots, annotation, and provenance summaries.</p></div></div></div>
-</section><div class="footer">rMAP-GWAS report generated from successful Cromwell workflow outputs.</div></div></body></html>'''
+<div class="card half" id="validation"><h2><span>10</span> Input validation</h2><pre>{safe_text(validation_txt)}</pre></div><div class="card half" id="panaroo"><h2><span>11</span> Panaroo summary</h2><pre>{safe_text(panaroo_txt)}</pre></div><div class="card half" id="interpretation"><h2><span>12</span> Interpretation guidance</h2><div class="callout">Microbial GWAS can be confounded by lineage structure, outbreak clustering, recombination, phenotype misclassification, small sample size, species background, variable sequencing depth/assembly quality, point mutations outside gene presence/absence, and co-carriage of multiple resistance genes in the same antibiotic class. Use the population-structure plots, QC outputs, optional SNP GWAS, and, for recombining species, consider enabling Gubbins to reduce recombinant-block-driven SNP associations. Interpret candidate markers as associations with {safe_text(case_label)} versus {safe_text(control_label)}, not as proven causal determinants or standalone clinical resistance calls.</div></div>
+<div class="card" id="outputs"><h2><span>13</span> Key output files</h2><div class="outputs-frame"><p class="note"><strong>Click any output card to download the file.</strong> The cards are kept inside one responsive frame, so this section should not require horizontal scrolling.</p><div class="outputs-grid">{output_cards_html}</div></div></div>
+</section>{download_script}<div class="footer">rMAP-GWAS report generated from successful Cromwell workflow outputs.</div></div></body></html>'''
 
+section_summaries = {
+    "phenotype": f"This section confirms the exact binary contrast used by pyseer: {case_label} is coded as 1 and {control_label} is coded as 0. Confirm that these labels match the study metadata before interpreting associations.",
+    "amr-scope": f"This section addresses AMR-specific interpretation concerns: resistance versus susceptibility coding, species background, depth and assembly quality, SNP/point mutations, and co-occurring resistance genes for the {case_label} versus {control_label} contrast.",
+    "pipeline": f"Reads are quality-trimmed, assembled, annotated with {annotation_engine}, summarized as a Panaroo pangenome, tested with pyseer, and then annotated against the selected reference package.",
+    "run-config": f"The report records the reference package, species label, annotation engine, GWAS mode, SNP branch, Gubbins status, and container backend so that the run can be audited and repeated.",
+    "top-hit": f"The top gene hit is a candidate association for the {case_label} versus {control_label} contrast. Treat it as a hypothesis until supported by sample size, population-structure checks, annotation confidence, and independent validation.",
+    "structure": f"Use the PCoA and kinship matrix to check whether {case_label} and {control_label} separate by lineage. Strong separation may indicate lineage-associated markers rather than phenotype-associated biology.",
+    "plots": "The gene plot and QQ plot provide a first-pass view of association strength and inflation. Outliers should be interpreted together with the priority table and annotation confidence.",
+    "snp": f"SNP GWAS is most useful for mutation-mediated phenotypes. Review population structure and, where relevant, recombination filtering before prioritizing SNP markers for the {case_label} versus {control_label} contrast.",
+    "gubbins": "The recombination panel documents whether Gubbins was requested, whether filtering succeeded, and whether the SNP GWAS used the filtered or original VCF.",
+    "hits": "The prioritized table ranks candidate gene presence/absence associations by statistical evidence, enrichment direction, effect size, and annotation support.",
+    "allhits": "This section lists all significant gene presence/absence hits at the selected threshold; use it for broader review beyond the top candidates.",
+    "annotation": "The confidence guide explains how reference annotation rescue should be interpreted. Low-confidence or unmatched markers should retain their stable Panaroo/SNP identifiers.",
+    "validation": "The validation report checks input consistency, sample counts, paired FASTQ arrays, and phenotype coding before downstream interpretation.",
+    "panaroo": f"The Panaroo summary describes the pangenome graph and gene matrix generated from {annotation_engine}-derived GFF files.",
+    "interpretation": "These notes summarize major microbial GWAS caveats, including population structure, recombination, small sample size, and phenotype misclassification.",
+    "outputs": "This section records the key files needed for review, reruns, sharing, and downstream manuscript or supplementary reporting."
+}
+html_doc = add_section_summaries_and_navigation(html_doc, section_summaries)
 Path(prefix + "_report.html").write_text(html_doc)
 provenance = {
     "workflow": "rMAP-GWAS",
     "workflow_version": "0.4.0-phenotype-display-labels",
-    "description": "Modular microbial GWAS with metadata-derived phenotype display labels in HTML reports.",
+    "description": "Modular microbial GWAS with metadata-derived phenotype display labels, optional Bakta annotation, section navigation, and rule-based interpretation summaries in HTML reports.",
     "gwas_mode": gwas_mode,
+    "annotation_engine": annotation_engine,
+    "automated_interpretation_disclaimer": "Rule-based report summaries are supportive guidance only and require qualified expert validation.",
     "do_snp_gwas": do_snp_gwas,
     "do_gubbins": do_gubbins,
     "gubbins_status": gubbins_status_value,
     "gubbins_filtering_note": gubbins_filtering_note,
     "container_backend": container_backend,
     "reference": {"reference_docker": reference_docker, "reference_species": reference_species, "reference_name": reference_name},
-    "phenotype_coding": {"case": 1, "control": 0, "case_display_label": case_label, "control_display_label": control_label, "phenotype": phenotype_tested, "metadata_display_column": legend["metadata_column"]},
+    "phenotype_coding": {"case": 1, "control": 0, "case_display_label": case_label, "control_display_label": control_label, "phenotype": phenotype_tested, "phenotype_question": phenotype_question, "metadata_display_column": legend["metadata_column"], "amr_like_phenotype": amr_like_phenotype},
+    "association_scope": {
+        "primary_gene_presence_absence": True,
+        "optional_snp_gwas": do_snp_gwas,
+        "population_structure_correction": "Mash distances/MDS in pyseer gene GWAS; SNP branch uses available distance correction or fallback as configured.",
+        "not_automatically_modelled_as_covariates": ["sequencing_depth", "assembly_quality", "species", "multiple_resistance_genes_same_antibiotic_class", "plasmid_or_mobile_element_linkage"],
+        "amr_recommendation": "For resistance versus susceptibility analyses, use resistant=case and susceptible=control, filter low-quality samples, stratify or review by species, enable SNP GWAS for mutation-mediated resistance, and inspect gene co-occurrence by antibiotic class."
+    },
     "cases": cases,
     "controls": controls,
     "total_samples": total,
