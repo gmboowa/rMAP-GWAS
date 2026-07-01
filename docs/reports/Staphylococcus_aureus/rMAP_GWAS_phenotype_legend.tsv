@@ -1,0 +1,3 @@
+class	numeric_value	input_group_label	metadata_display_column	metadata_values	n_samples	display_label	display_label_plural
+case	1	case	MSSA_vs_MRSA	MRSA	50	case (MRSA)	cases (MRSA)
+control	0	control	MSSA_vs_MRSA	MSSA	50	control (MSSA)	controls (MSSA)
