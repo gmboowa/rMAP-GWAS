@@ -17,7 +17,7 @@ workflow rMAP_GWAS {
     # Required binary GWAS grouping is provided by the `groups` input, expected as case/control.
     # To make the HTML self-explanatory, map phenotype_display_values to the metadata column
     # that defines the biological contrast, and set phenotype_name to that column name.
-    # Examples:
+    # Optional metadata mapping:
     #   phenotype_name           = "specimen_source"
     #   phenotype_display_values = this.<entity_set_members>.specimen_source
     #
@@ -40,14 +40,14 @@ workflow rMAP_GWAS {
 
     # Optional recombination assessment/filtering for SNP GWAS.
     # Default is false to keep MTBC/clonal-organism runs simple and to avoid adding
-    # runtime to gene-only or smoke-test analyses. Enable for recombining bacteria
+    # runtime to gene-only analyses. Enable for recombining bacteria
     # where recombinant blocks may inflate SNP associations.
     Boolean do_gubbins = false
     Float snp_min_qual = 20.0
     String container_backend = "docker"
 
     # Pyseer population-structure controls.
-    # For small smoke tests, using too many MDS dimensions can make the null model singular.
+    # For small cohorts, using too many MDS dimensions can make the null model singular.
     Int pyseer_max_dimensions = 2
     Boolean pyseer_force_no_distances = false
     Boolean pyseer_no_distances_fallback = true
@@ -55,7 +55,7 @@ workflow rMAP_GWAS {
     String output_prefix = "rMAP_GWAS"
 
     # Runtime controls
-    # These defaults are smoke-test friendly. For full cohorts, increase pangenome/gwas resources as needed.
+    # These defaults are conservative. For larger cohorts, increase pangenome/GWAS resources as needed.
     Int fastp_threads = 4
     Int assembly_threads = 4
     Int annotation_threads = 4
@@ -280,13 +280,13 @@ workflow rMAP_GWAS {
 
   String snp_output_prefix = output_prefix + "_SNP"
 
-  call MAKE_SNP_GWAS_PLACEHOLDERS {
+  call MAKE_SNP_GWAS_EMPTY_OUTPUTS {
     input:
       output_prefix = snp_output_prefix,
       python_docker = python_docker
   }
 
-  call MAKE_GUBBINS_PLACEHOLDERS {
+  call MAKE_GUBBINS_EMPTY_OUTPUTS {
     input:
       output_prefix = snp_output_prefix,
       python_docker = python_docker
@@ -359,19 +359,19 @@ workflow rMAP_GWAS {
     }
   }
 
-  File snp_vcf_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_filtered_vcf, SNP_CALLING_SNIPPY.snp_vcf, MAKE_SNP_GWAS_PLACEHOLDERS.snp_vcf])
-  File gubbins_summary_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_summary, MAKE_GUBBINS_PLACEHOLDERS.gubbins_summary])
-  File gubbins_filtered_alignment_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_filtered_alignment, MAKE_GUBBINS_PLACEHOLDERS.gubbins_filtered_alignment])
-  File gubbins_recombination_gff_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_recombination_gff, MAKE_GUBBINS_PLACEHOLDERS.gubbins_recombination_gff])
-  File gubbins_log_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_log, MAKE_GUBBINS_PLACEHOLDERS.gubbins_log])
-  File gubbins_filtered_vcf_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_filtered_vcf, MAKE_GUBBINS_PLACEHOLDERS.gubbins_filtered_vcf])
-  File snp_pyseer_assoc_for_report = select_first([PYSEER_SNP_GWAS.pyseer_snp_assoc, MAKE_SNP_GWAS_PLACEHOLDERS.pyseer_snp_assoc])
-  File snp_top_hits_for_report = select_first([PRIORITIZE_SNP_GWAS_HITS.snp_top_hits, MAKE_SNP_GWAS_PLACEHOLDERS.snp_top_hits])
-  File snp_all_significant_hits_for_report = select_first([PRIORITIZE_SNP_GWAS_HITS.snp_all_significant_hits, MAKE_SNP_GWAS_PLACEHOLDERS.snp_all_significant_hits])
-  File snp_summary_for_report = select_first([PRIORITIZE_SNP_GWAS_HITS.snp_summary, MAKE_SNP_GWAS_PLACEHOLDERS.snp_summary])
-  File snp_manhattan_plot_for_report = select_first([GENERATE_SNP_GWAS_PLOTS.snp_manhattan_plot_svg, MAKE_SNP_GWAS_PLACEHOLDERS.snp_manhattan_plot_svg])
-  File snp_qq_plot_for_report = select_first([GENERATE_SNP_GWAS_PLOTS.snp_qq_plot_svg, MAKE_SNP_GWAS_PLACEHOLDERS.snp_qq_plot_svg])
-  File snp_plot_summary_for_report = select_first([GENERATE_SNP_GWAS_PLOTS.snp_plot_summary, MAKE_SNP_GWAS_PLACEHOLDERS.snp_plot_summary])
+  File snp_vcf_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_filtered_vcf, SNP_CALLING_SNIPPY.snp_vcf, MAKE_SNP_GWAS_EMPTY_OUTPUTS.snp_vcf])
+  File gubbins_summary_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_summary, MAKE_GUBBINS_EMPTY_OUTPUTS.gubbins_summary])
+  File gubbins_filtered_alignment_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_filtered_alignment, MAKE_GUBBINS_EMPTY_OUTPUTS.gubbins_filtered_alignment])
+  File gubbins_recombination_gff_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_recombination_gff, MAKE_GUBBINS_EMPTY_OUTPUTS.gubbins_recombination_gff])
+  File gubbins_log_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_log, MAKE_GUBBINS_EMPTY_OUTPUTS.gubbins_log])
+  File gubbins_filtered_vcf_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_filtered_vcf, MAKE_GUBBINS_EMPTY_OUTPUTS.gubbins_filtered_vcf])
+  File snp_pyseer_assoc_for_report = select_first([PYSEER_SNP_GWAS.pyseer_snp_assoc, MAKE_SNP_GWAS_EMPTY_OUTPUTS.pyseer_snp_assoc])
+  File snp_top_hits_for_report = select_first([PRIORITIZE_SNP_GWAS_HITS.snp_top_hits, MAKE_SNP_GWAS_EMPTY_OUTPUTS.snp_top_hits])
+  File snp_all_significant_hits_for_report = select_first([PRIORITIZE_SNP_GWAS_HITS.snp_all_significant_hits, MAKE_SNP_GWAS_EMPTY_OUTPUTS.snp_all_significant_hits])
+  File snp_summary_for_report = select_first([PRIORITIZE_SNP_GWAS_HITS.snp_summary, MAKE_SNP_GWAS_EMPTY_OUTPUTS.snp_summary])
+  File snp_manhattan_plot_for_report = select_first([GENERATE_SNP_GWAS_PLOTS.snp_manhattan_plot_svg, MAKE_SNP_GWAS_EMPTY_OUTPUTS.snp_manhattan_plot_svg])
+  File snp_qq_plot_for_report = select_first([GENERATE_SNP_GWAS_PLOTS.snp_qq_plot_svg, MAKE_SNP_GWAS_EMPTY_OUTPUTS.snp_qq_plot_svg])
+  File snp_plot_summary_for_report = select_first([GENERATE_SNP_GWAS_PLOTS.snp_plot_summary, MAKE_SNP_GWAS_EMPTY_OUTPUTS.snp_plot_summary])
 
   call ANNOTATE_GWAS_HITS_WITH_GENBANK {
     input:
@@ -996,7 +996,7 @@ echo "Panaroo input GFF count: $(ls gffs/*.gff | wc -l)" >&2
 ls -lh gffs/*.gff >&2
 
 # Strict mode is preferred. If strict cleaning fails for a small or heterogeneous
-# smoke-test cohort, retry once in moderate mode so the workflow can proceed and
+# cohort, retry once in moderate mode so the workflow can proceed and
 # still produce a usable gene presence/absence matrix.
 set +e
 panaroo \
@@ -1071,12 +1071,12 @@ echo "Panaroo output files:" > panaroo_summary.txt
 find panaroo_out -maxdepth 2 -type f | sort >> panaroo_summary.txt
 
 # Ensure optional Panaroo files needed for post-GWAS annotation are present as WDL outputs.
-# Some Panaroo versions may omit one of these; create empty placeholders so the
+# Some Panaroo versions may omit one of these; create empty compatibility files so the
 # downstream annotation task can degrade gracefully rather than failing localization.
 for f in   panaroo_out/gene_data.csv   panaroo_out/combined_DNA_CDS.fasta   panaroo_out/combined_protein_CDS.fasta   panaroo_out/pan_genome_reference.fa
  do
   if [ ! -e "$f" ]; then
-    echo "WARNING: optional Panaroo annotation file missing, creating placeholder: $f" >&2
+    echo "WARNING: optional Panaroo annotation file missing, creating empty compatibility file: $f" >&2
     touch "$f"
   fi
  done
@@ -1283,7 +1283,7 @@ else
     cat pyseer.stderr.log >> pyseer_run.log
 
     if [[ "~{no_distances_fallback}" == "true" ]]; then
-      echo "Retrying pyseer with --no-distances so the smoke test can complete." >> pyseer_run.log
+      echo "Retrying pyseer with --no-distances so the workflow can complete." >> pyseer_run.log
       set +e
       pyseer \
         --phenotypes ~{phenotype_tsv} \
@@ -2189,6 +2189,10 @@ def make_svg_points_plot(points, title, xlabel, ylabel, path, line=False):
         body_parts.append(f'<line x1="{ml}" y1="{mt+ph}" x2="{ml+pw}" y2="{mt+ph}" stroke="#8ecaff"/>')
         body_parts.append(f'<line x1="{ml}" y1="{mt}" x2="{ml}" y2="{mt+ph}" stroke="#8ecaff"/>')
         sig_y = -math.log10(alpha) if alpha > 0 else None
+        if line and points:
+            lim = min(max(xs), max(ys))
+            if lim > 0:
+                body_parts.append(f'<line x1="{sx(0):.1f}" y1="{sy(0):.1f}" x2="{sx(lim):.1f}" y2="{sy(lim):.1f}" stroke="rgba(255,255,255,0.35)" stroke-width="2"/>')
         if sig_y and sig_y <= ymax:
             body_parts.append(f'<line x1="{ml}" y1="{sy(sig_y):.1f}" x2="{ml+pw}" y2="{sy(sig_y):.1f}" stroke="#ff7ab6" stroke-width="2" stroke-dasharray="8 8"/>')
             body_parts.append(f'<text x="{ml+pw-4}" y="{sy(sig_y)-8:.1f}" fill="#ffb3d9" text-anchor="end" font-size="12">alpha={alpha:g}</text>')
@@ -2217,16 +2221,57 @@ if n:
     if len(qq) > max_points:
         step = max(1, len(qq)//max_points)
         qq = qq[::step]
-make_svg_points_plot(qq, plot_label + " QQ plot", "Expected -log10(p-value)", "Observed -log10(p-value)", prefix + "_qq.svg")
+make_svg_points_plot(qq, plot_label + " QQ plot", "Expected -log10(p-value)", "Observed -log10(p-value)", prefix + "_qq.svg", line=True)
+
+sig_count = sum(1 for _, p in rows if p <= alpha)
+top_feature = rows_sorted[0][0] if rows_sorted else "NA"
+top_p = rows_sorted[0][1] if rows_sorted else None
+top_logp = -math.log10(top_p) if top_p else 0.0
+if rows:
+    observed_full = sorted([-math.log10(p) for _, p in rows_sorted])
+    expected_full = sorted([-math.log10((i + 0.5) / len(rows_sorted)) for i in range(len(rows_sorted))])
+    mid = len(observed_full) // 2
+    median_delta = observed_full[mid] - expected_full[mid]
+    tail_delta = observed_full[-1] - expected_full[-1]
+else:
+    median_delta = 0.0
+    tail_delta = 0.0
+
+if not rows:
+    manhattan_layman = "No valid gene p-values were available, so the gene Manhattan-style plot cannot be interpreted for this run."
+elif sig_count == 0:
+    manhattan_layman = f"Each dot is a gene or gene cluster. Taller dots mean stronger evidence of difference between the two groups. In this run, none of the {len(rows)} tested gene features crossed the alpha={alpha:g} line, so there is no strong gene presence/absence signal at this threshold. This can happen with small cohorts, weak phenotype separation, or true absence of strong gene-level associations."
+elif sig_count == 1:
+    manhattan_layman = f"Each dot is a gene or gene cluster. Taller dots mean stronger evidence of difference between the two groups. In this run, 1 of {len(rows)} tested gene features crossed the alpha={alpha:g} line. The tallest signal was {top_feature} (p={top_p:.3g}), which should be treated as a candidate association, not proof of causation. Check the priority table, annotation confidence, and population structure before making a biological claim."
+else:
+    manhattan_layman = f"Each dot is a gene or gene cluster. Taller dots mean stronger evidence of difference between the two groups. In this run, {sig_count} of {len(rows)} tested gene features crossed the alpha={alpha:g} line. The tallest signal was {top_feature} (p={top_p:.3g}). Multiple significant dots may represent linked genes, mobile elements, or lineage effects, so review the priority table and population structure before interpreting them as independent causal markers."
+
+if not rows:
+    qq_layman = "No valid gene p-values were available, so the QQ plot cannot be interpreted for this run."
+elif sig_count == 0 and tail_delta < 0.5 and abs(median_delta) < 0.35:
+    qq_layman = "The QQ plot compares observed p-values with what would be expected if there were no real association signal. The points do not show a strong upward tail, which supports the interpretation that this run has no clear gene-level association at the chosen threshold."
+elif median_delta > 0.35:
+    qq_layman = f"The QQ plot shows broad upward deviation from the expected pattern (median observed minus expected -log10 p-value approximately {median_delta:.2f}). This can mean true widespread signal, but in microbial GWAS it often suggests inflation from lineage, outbreak clustering, related samples, or phenotype imbalance. Review the PCoA/kinship plots and consider stricter filtering or lineage-aware analysis."
+elif tail_delta > 0.5 and sig_count > 0:
+    qq_layman = "Most QQ-plot points are close to the expected background, but the upper tail rises above expectation. That pattern is consistent with a small number of candidate gene associations rather than general inflation. The candidate signals should still be checked against population structure and annotation confidence."
+else:
+    qq_layman = "The QQ plot does not show strong genome-wide inflation. Any outlying points should still be interpreted cautiously together with sample size, phenotype coding, and population-structure checks."
 
 with open(prefix + "_plot_summary.tsv", "w") as out:
     out.write("metric\tvalue\n")
     out.write(f"pvalues_detected\t{len(rows)}\n")
     out.write(f"points_drawn\t{len(draw_rows)}\n")
     out.write(f"plot_label\t{plot_label}\n")
-    out.write(f"significant_points_at_alpha\t{sum(1 for _, p in rows if p <= alpha)}\n")
+    out.write(f"significant_points_at_alpha\t{sig_count}\n")
+    out.write(f"top_feature\t{top_feature}\n")
+    out.write(f"top_pvalue\t{top_p if top_p is not None else 'NA'}\n")
+    out.write(f"top_minus_log10_pvalue\t{top_logp:.4f}\n")
+    out.write(f"qq_median_delta_observed_minus_expected\t{median_delta:.4f}\n")
+    out.write(f"qq_tail_delta_observed_minus_expected\t{tail_delta:.4f}\n")
     out.write("manhattan_type\tfeature_index_not_genomic_coordinate\n")
     out.write("qq_plot\tgenerated\n")
+    out.write(f"layman_manhattan_interpretation\t{manhattan_layman}\n")
+    out.write(f"layman_qq_interpretation\t{qq_layman}\n")
 PY
   >>>
 
@@ -2405,14 +2450,58 @@ if n:
         qq = qq[::step]
 make_svg_points_plot(qq, "SNP marker GWAS QQ plot", "Expected -log10(p-value)", "Observed -log10(p-value)", prefix + "_qq.svg", draw_diag=True)
 
+sig_count = sum(1 for r in rows if r["p"] <= alpha)
+top = sorted(rows, key=lambda r: r["p"])[0] if rows else None
+top_feature = top["feature"] if top else "NA"
+top_position = (str(top.get("position", "")) if top else "")
+top_p = top["p"] if top else None
+top_logp = -math.log10(top_p) if top_p else 0.0
+if rows:
+    observed_full = sorted([-math.log10(r["p"]) for r in rows])
+    expected_full = sorted([-math.log10((i + 0.5) / len(rows)) for i in range(len(rows))])
+    mid = len(observed_full) // 2
+    median_delta = observed_full[mid] - expected_full[mid]
+    tail_delta = observed_full[-1] - expected_full[-1]
+else:
+    median_delta = 0.0
+    tail_delta = 0.0
+
+if not rows:
+    manhattan_layman = "No valid SNP p-values were available. This usually means the SNP branch was not run, no usable SNPs passed filters, or pyseer did not return SNP association statistics."
+elif sig_count == 0:
+    manhattan_layman = f"Each dot is a SNP marker. Taller dots mean stronger evidence that the marker differs between the two phenotype groups. In this run, none of the {len(rows)} tested SNP markers crossed the alpha={alpha:g} line, so there is no strong SNP signal at this threshold."
+elif sig_count == 1:
+    manhattan_layman = f"Each dot is a SNP marker placed by reference coordinate when available. One of {len(rows)} tested SNP markers crossed the alpha={alpha:g} line. The strongest marker was {top_feature} at position {top_position} (p={top_p:.3g}). Treat it as a candidate mutation signal and verify it against known biology, coverage, lineage structure, and any recombination filtering."
+else:
+    manhattan_layman = f"Each dot is a SNP marker placed by reference coordinate when available. {sig_count} of {len(rows)} tested SNP markers crossed the alpha={alpha:g} line. The strongest marker was {top_feature} at position {top_position} (p={top_p:.3g}). Clusters of SNP hits can reflect true mutation signal, lineage background, or linked variants, so review the top-hit table and PCoA/kinship plots before interpretation."
+
+if not rows:
+    qq_layman = "No valid SNP p-values were available, so the SNP QQ plot cannot be interpreted for this run."
+elif sig_count == 0 and tail_delta < 0.5 and abs(median_delta) < 0.35:
+    qq_layman = "The SNP QQ plot does not show a strong upward tail, supporting the interpretation that no clear SNP-level signal was detected at the chosen threshold."
+elif median_delta > 0.35:
+    qq_layman = f"The SNP QQ plot shows broad upward deviation from the null expectation (median observed minus expected -log10 p-value approximately {median_delta:.2f}). In microbial GWAS, this can indicate confounding from lineage, relatedness, outbreak structure, recombination, or phenotype imbalance. Interpret SNP hits only after checking population structure and filtering choices."
+elif tail_delta > 0.5 and sig_count > 0:
+    qq_layman = "The SNP QQ plot has a raised upper tail with less broad inflation across the rest of the plot. This pattern is compatible with a limited number of candidate SNP associations, but they still need biological validation and lineage checks."
+else:
+    qq_layman = "The SNP QQ plot does not show strong genome-wide inflation. Any outlying SNPs should still be reviewed alongside quality, recombination, and lineage information."
+
 with open(prefix + "_plot_summary.tsv", "w") as out:
     out.write("metric\tvalue\n")
     out.write("plot_label\tSNP marker GWAS\n")
     out.write(f"pvalues_detected\t{len(rows)}\n")
-    out.write(f"significant_points_at_alpha\t{sum(1 for r in rows if r['p'] <= alpha)}\n")
+    out.write(f"significant_points_at_alpha\t{sig_count}\n")
+    out.write(f"top_marker\t{top_feature}\n")
+    out.write(f"top_position\t{top_position or 'NA'}\n")
+    out.write(f"top_pvalue\t{top_p if top_p is not None else 'NA'}\n")
+    out.write(f"top_minus_log10_pvalue\t{top_logp:.4f}\n")
+    out.write(f"qq_median_delta_observed_minus_expected\t{median_delta:.4f}\n")
+    out.write(f"qq_tail_delta_observed_minus_expected\t{tail_delta:.4f}\n")
     out.write(f"points_drawn\t{len(draw_rows)}\n")
     out.write("manhattan_type\treference_coordinate_when_available\n")
     out.write("qq_plot\tgenerated\n")
+    out.write(f"layman_manhattan_interpretation\t{manhattan_layman}\n")
+    out.write(f"layman_qq_interpretation\t{qq_layman}\n")
 PY
   >>>
 
@@ -2431,7 +2520,7 @@ PY
 }
 
 
-task MAKE_SNP_GWAS_PLACEHOLDERS {
+task MAKE_SNP_GWAS_EMPTY_OUTPUTS {
   input {
     String output_prefix
     String python_docker
@@ -2465,6 +2554,8 @@ metric	value
 pvalues_detected	0
 points_drawn	0
 snp_gwas_status	not_run
+layman_manhattan_interpretation	The SNP GWAS branch was not run for this workflow execution, so there is no SNP Manhattan plot to interpret. Enable do_snp_gwas=true when the phenotype may be driven by point mutations.
+layman_qq_interpretation	The SNP GWAS branch was not run for this workflow execution, so there is no SNP QQ plot to interpret.
 EOF
   >>>
 
@@ -2487,7 +2578,7 @@ EOF
   }
 }
 
-task MAKE_GUBBINS_PLACEHOLDERS {
+task MAKE_GUBBINS_EMPTY_OUTPUTS {
   input {
     String output_prefix
     String python_docker
@@ -2498,7 +2589,7 @@ set -euo pipefail
 cat > ~{output_prefix}_gubbins_summary.tsv <<'EOF'
 metric	value
 gubbins_status	not_run
-recommendation	Optional. Enable for recombining bacteria or strong lineage/recombination concerns; usually not required as a default for MTBC/clonal smoke-test runs.
+recommendation	Optional. Enable for recombining bacteria or strong lineage/recombination concerns; usually not required as a default for MTBC/clonal analyses.
 usage_note	Gubbins not requested. Primary SNP GWAS used the unfiltered Snippy/core VCF when SNP GWAS was enabled.
 EOF
 
@@ -2564,7 +2655,7 @@ regions_tsv="~{output_prefix}_gubbins.recombination_regions.tsv"
 cat > "$log" <<'EOF'
 Starting optional Gubbins recombination assessment/filtering.
 This module is recommended for recombining bacterial species or datasets where recombinant blocks may inflate SNP associations.
-For MTBC/clonal smoke-test runs, keep do_gubbins=false unless there is a specific recombination/lineage question.
+For MTBC/clonal analyses, keep do_gubbins=false unless there is a specific recombination/lineage question.
 EOF
 
 # Always create valid fallback outputs so that optional Gubbins never prevents the rest of the SNP GWAS report from being generated.
@@ -2645,7 +2736,7 @@ fi
 filtered_snp_records=$(grep -vc '^#' "$filtered_vcf" || true)
 
 # Avoid sending an empty SNP VCF into pyseer when the Gubbins-filtered VCF removes every variant.
-# This keeps do_gubbins safe for small/smoke-test runs and records the fallback in the summary.
+# This keeps do_gubbins safe when recombination filtering removes all SNP records and records the fallback in the summary.
 if [ "$input_snp_records" -gt 0 ] && [ "$filtered_snp_records" -eq 0 ]; then
   cp input.snps.vcf "$filtered_vcf"
   filter_note="${filter_note} Filtered VCF contained zero SNP records, so the original Snippy SNP VCF was restored for pyseer to avoid an empty SNP-GWAS input."
@@ -3296,6 +3387,57 @@ hp.append(f'<circle cx="40" cy="{legend_y}" r="6" fill="#ff7ab6" opacity="0.85"/
 hp.append(f'<circle cx="240" cy="{legend_y}" r="6" fill="#21d4fd" opacity="0.85"/><text x="256" y="{legend_y+5}" fill="#dbeafe" font-family="Arial" font-size="12">{esc(legend["control"])} samples</text>')
 hp.append('</svg>')
 Path(prefix + "_kinship_heatmap.svg").write_text("\n".join(hp))
+
+case_indices = [i for i, name in enumerate(names) if phenotypes.get(name, 0) == 1]
+control_indices = [i for i, name in enumerate(names) if phenotypes.get(name, 0) == 0]
+
+def mean_pair_distance(a, b, same_group=False):
+    vals = []
+    for ii in a:
+        for jj in b:
+            if same_group and jj <= ii:
+                continue
+            if ii == jj:
+                continue
+            if D.size:
+                vals.append(float(D[ii, jj]))
+    return float(np.mean(vals)) if vals else float('nan')
+
+case_within = mean_pair_distance(case_indices, case_indices, same_group=True)
+control_within = mean_pair_distance(control_indices, control_indices, same_group=True)
+between = mean_pair_distance(case_indices, control_indices, same_group=False)
+within_vals = [x for x in [case_within, control_within] if not np.isnan(x)]
+within_mean = float(np.mean(within_vals)) if within_vals else float('nan')
+between_within_ratio = (between / within_mean) if within_vals and within_mean > 0 and not np.isnan(between) else float('nan')
+
+if len(coords) and case_indices and control_indices:
+    case_centroid = coords[case_indices, :2].mean(axis=0)
+    control_centroid = coords[control_indices, :2].mean(axis=0)
+    centroid_distance = float(np.linalg.norm(case_centroid - control_centroid))
+    spread = float(np.sqrt(np.sum(np.var(coords[:, :2], axis=0)))) or 1.0
+    centroid_separation_score = centroid_distance / spread if spread > 0 else 0.0
+else:
+    centroid_distance = 0.0
+    centroid_separation_score = 0.0
+
+if np.isnan(between_within_ratio):
+    between_within_ratio_out = "NA"
+    between_within_ratio_text = "NA"
+else:
+    between_within_ratio_out = f"{between_within_ratio:.4f}"
+    between_within_ratio_text = f"{between_within_ratio:.2f}"
+
+if not names:
+    pcoa_layman = "No Mash distance matrix was available, so the PCoA plot cannot be interpreted for this run."
+elif not case_indices or not control_indices:
+    pcoa_layman = "The PCoA plot shows overall genetic similarity among samples, but one of the two phenotype groups is missing from the matrix, so case-control separation cannot be assessed."
+elif centroid_separation_score >= 1.0 or (not np.isnan(between_within_ratio) and between_within_ratio >= 1.25):
+    pcoa_layman = f"The PCoA plot shows how genetically similar the samples are: dots close together are more related, and dots far apart are more different. In this run, the two phenotype groups appear strongly separated by genetic background (PCoA separation score {centroid_separation_score:.2f}; between/within Mash distance ratio {between_within_ratio_text}). This means GWAS hits may reflect lineage or outbreak structure as much as the phenotype, so interpret Manhattan-plot outliers cautiously."
+elif centroid_separation_score >= 0.5 or (not np.isnan(between_within_ratio) and between_within_ratio >= 1.10):
+    pcoa_layman = f"The PCoA plot shows moderate separation between the two phenotype groups (PCoA separation score {centroid_separation_score:.2f}; between/within Mash distance ratio {between_within_ratio_text}). Some GWAS signals may still be influenced by lineage, so prioritize hits that remain biologically plausible and are not explained only by clustering."
+else:
+    pcoa_layman = f"The PCoA plot suggests the two phenotype groups are relatively mixed by Mash distance (PCoA separation score {centroid_separation_score:.2f}; between/within Mash distance ratio {between_within_ratio_text}). This reduces, but does not eliminate, concern that associations are driven only by lineage."
+
 with open(prefix + "_population_structure_summary.tsv", "w") as out:
     out.write("metric\tvalue\n")
     out.write(f"phenotype\t{phenotype_name}\n")
@@ -3304,7 +3446,14 @@ with open(prefix + "_population_structure_summary.tsv", "w") as out:
     out.write(f"samples\t{len(names)}\n")
     out.write(f"pcoa1_variance_percent\t{var1:.4f}\n")
     out.write(f"pcoa2_variance_percent\t{var2:.4f}\n")
+    out.write(f"pcoa1_plus_pcoa2_variance_percent\t{(var1 + var2):.4f}\n")
+    out.write(f"case_within_mean_mash_distance\t{case_within if not np.isnan(case_within) else 'NA'}\n")
+    out.write(f"control_within_mean_mash_distance\t{control_within if not np.isnan(control_within) else 'NA'}\n")
+    out.write(f"between_group_mean_mash_distance\t{between if not np.isnan(between) else 'NA'}\n")
+    out.write(f"between_within_mash_distance_ratio\t{between_within_ratio_out}\n")
+    out.write(f"pcoa_centroid_separation_score\t{centroid_separation_score:.4f}\n")
     out.write("method\tPCoA from square Mash distance matrix plus distance heatmap\n")
+    out.write(f"layman_pcoa_interpretation\t{pcoa_layman}\n")
 PY
   >>>
 
@@ -3754,7 +3903,7 @@ def amr_scope_table_html(amr_like):
         (
             "Multiple resistance genes in the same class",
             "Prioritized hits are marker-level associations and may be correlated through plasmids, mobile elements, clonal background, or co-carriage.",
-            "For antibiotic-class interpretation, inspect gene co-occurrence and consider class-level summaries or follow-up multivariable models outside this first-pass report."
+            "For antibiotic-class interpretation, inspect gene co-occurrence and consider class-level summaries or follow-up multivariable models outside this summary report."
         ),
         (
             "Population structure and linkage",
@@ -3765,14 +3914,11 @@ def amr_scope_table_html(amr_like):
     out = [
         f"<div class=\"callout\"><strong>Configured phenotype:</strong> {safe_text(intro)}</div>",
         "<div class=\"table-wrap\"><table>",
-        "<thead><tr><th>Jupiter's concern</th><th>Current workflow/report behavior</th><th>Recommended AMR interpretation</th></tr></thead><tbody>"
+        "<thead><tr><th>Interpretation issue</th><th>Current workflow/report behavior</th><th>Recommended AMR interpretation</th></tr></thead><tbody>"
     ]
     for concern, behavior, recommendation in rows:
         out.append(f"<tr><td>{safe_text(concern)}</td><td>{safe_text(behavior)}</td><td>{safe_text(recommendation)}</td></tr>")
     out.append("</tbody></table></div>")
-    out.append(
-        "<p class=\"note\"><strong>Practical AMR smoke-test recommendation:</strong> use Prof. Damalie's data as a phenotype-anchored test set by setting the phenotype metadata to resistant/susceptible, running species-aware summaries, enabling SNP GWAS where mutation-mediated resistance is expected, and reviewing gene co-occurrence for each antibiotic class.</p>"
-    )
     return "\n".join(out)
 
 
@@ -3793,7 +3939,7 @@ def add_section_summaries_and_navigation(doc, summaries):
     doc = doc.replace('<div class="card half"><h2><span>04</span> Top-hit GenBank annotation rescue</h2>', '<div class="card half" id="top-hit"><h2><span>04</span> Top-hit GenBank annotation rescue</h2>', 1)
     doc = doc.replace('<div class="title">Prokka + Panaroo</div><p>Creates GFF annotations and pangenome gene matrices.</p>', '<div class="title">' + safe_text(annotation_engine) + ' + Panaroo</div><p>Creates GFF annotations and pangenome gene matrices. Prokka remains the default; Bakta can be enabled with <code>use_bakta=true</code>.</p>', 1)
     doc = doc.replace('container backend recorded as ' + safe_text(container_backend) + '.</div>', 'annotation engine: ' + safe_text(annotation_engine) + '; container backend recorded as ' + safe_text(container_backend) + '.</div>', 1)
-    doc = doc.replace('</nav><div class="callout"><strong>Smoke-test/sample-size note:', '</nav><div class="callout disclaimer"><strong>Automated interpretation disclaimer:</strong> The brief summaries in this report are rule-based supportive guidance for navigation and first-pass review only. Final biological, clinical, or public-health interpretation should be validated by a qualified expert.</div><div class="callout"><strong>Smoke-test/sample-size note:', 1)
+    doc = doc.replace('</nav><div class="callout"><strong>Sample-size interpretation note:', '</nav><div class="callout disclaimer"><strong>Automated interpretation disclaimer:</strong> The brief summaries in this report are rule-based supportive guidance for navigation and structured review only. Final biological, clinical, or public-health interpretation should be validated by a qualified expert.</div><div class="callout"><strong>Sample-size interpretation note:', 1)
     for section_id, summary in summaries.items():
         pattern = r'(<div class="card(?: [^"]*)?" id="' + re.escape(section_id) + r'"><h2.*?</h2>)'
         doc = re.sub(pattern, lambda m: m.group(1) + brief_summary(summary), doc, count=1, flags=re.S)
@@ -3833,6 +3979,11 @@ plot_summary_txt = read_text("~{plot_summary}")
 population_structure_summary_txt = replace_group_terms_text(read_text("~{population_structure_summary}"))
 snp_summary_txt = read_text("~{snp_summary}")
 snp_plot_summary_txt = read_text("~{snp_plot_summary}")
+gene_manhattan_layman = replace_group_terms_text(summary_value("~{plot_summary}", "layman_manhattan_interpretation", "Each dot is a gene or gene cluster. Taller dots have stronger statistical evidence; outliers should be reviewed with annotation and population structure."))
+gene_qq_layman = replace_group_terms_text(summary_value("~{plot_summary}", "layman_qq_interpretation", "The QQ plot compares observed p-values with expected background p-values; broad upward deviation can indicate confounding or inflation."))
+snp_manhattan_layman = replace_group_terms_text(summary_value("~{snp_plot_summary}", "layman_manhattan_interpretation", "Each dot is a SNP marker. Taller dots have stronger statistical evidence; candidate SNPs require validation."))
+snp_qq_layman = replace_group_terms_text(summary_value("~{snp_plot_summary}", "layman_qq_interpretation", "The SNP QQ plot compares observed p-values with expected background p-values."))
+pcoa_layman = replace_group_terms_text(summary_value("~{population_structure_summary}", "layman_pcoa_interpretation", "The PCoA plot shows genetic similarity among samples. If phenotype groups separate strongly, GWAS hits may reflect lineage/background rather than phenotype biology."))
 gubbins_summary_txt = read_text("~{gubbins_summary}")
 gubbins_status_value = summary_value("~{gubbins_summary}", "gubbins_status", "not_run")
 gubbins_filtering_note = summary_value("~{gubbins_summary}", "filtering_note", "Gubbins not run.")
@@ -3887,10 +4038,13 @@ function downloadCurrentReport(filename) {
 snp_section = f"""
 <div class=\"card\" id=\"snp\"><h2><span>06</span> SNP marker GWAS</h2>
 <div class=\"callout\"><strong>SNP branch:</strong> {safe_text(snp_status)}. SNP marker GWAS is intended for mutation-mediated phenotypes, including MTBC drug-resistance traits. Review {safe_text(case_label)}/{safe_text(control_label)} population structure before interpreting SNP hits. Optional Gubbins status: <strong>{safe_text(gubbins_effective)}</strong>.</div>
-<div class=\"plot-grid\"><div class=\"plot\">{snp_manhattan_svg}</div><div class=\"plot\">{snp_qq_svg}</div></div>
+<div class=\"callout\"><strong>Lay interpretation — SNP Manhattan:</strong> {safe_text(snp_manhattan_layman)}</div>
+<div class=\"callout\"><strong>Lay interpretation — SNP QQ:</strong> {safe_text(snp_qq_layman)}</div>
+<div class=\"snp-plot-stack\"><div class=\"plot\">{snp_manhattan_svg}</div><div class=\"plot\">{snp_qq_svg}</div></div>
+<h3>Top priority SNP marker hits</h3>
 <pre>{safe_text(snp_plot_summary_txt)}</pre>
-<h3>Top priority SNP marker hits</h3>{top_cards(snp_top_rows, 5, 'SNP rank')}
-<h3>SNP hit table</h3>{table_from_tsv('~{snp_top_hits}', max_rows=100, reorder=True)}
+<h3>SNP hit table</h3>{top_cards(snp_top_rows, 5, 'SNP rank')}
+{table_from_tsv('~{snp_top_hits}', max_rows=100, reorder=True)}
 <pre>{safe_text(snp_summary_txt)}</pre></div>
 """
 
@@ -3913,7 +4067,7 @@ css = """
 .badges { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 22px; } .badge { border: 1px solid rgba(33,212,253,0.32); background: rgba(7,18,42,0.68); border-radius: 999px; padding: 10px 14px; color: #dff8ff; font-weight: 700; }
 .metrics { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; } .metric { border: 1px solid rgba(255,255,255,0.12); border-radius: 20px; padding: 20px; background: rgba(7,12,31,0.68); } .metric .num { font-size: 42px; font-weight: 900; letter-spacing: -0.05em; } .metric .num.smalltop { font-size: 23px; letter-spacing: -0.02em; line-height: 1.05; } .metric .label { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .08em; font-weight: 800; } .metric .sub { color: var(--muted); font-size: 12px; line-height: 1.35; margin-top: 8px; }
 .nav { display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 0; } .nav a { text-decoration: none; color: #dff7ff; font-weight: 800; font-size: 13px; padding: 10px 13px; border-radius: 12px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.09); }
-.section-tools { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; margin-top: 18px; padding-top: 14px; border-top: 1px solid rgba(148,163,184,.18); } .section-tools a { text-decoration: none; color: #dff7ff; font-weight: 900; font-size: 12px; padding: 8px 11px; border-radius: 999px; background: rgba(33,212,253,0.10); border: 1px solid rgba(33,212,253,0.28); }
+.section-tools { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; align-items: center; width: 100%; min-height: 0; margin-top: 18px; padding-top: 14px; border-top: 1px solid rgba(148,163,184,.18); } .section-tools a { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; min-height: 0; height: auto; max-height: 38px; line-height: 1; text-decoration: none; color: #dff7ff; font-weight: 900; font-size: 12px; padding: 8px 11px; border-radius: 999px; background: rgba(33,212,253,0.10); border: 1px solid rgba(33,212,253,0.28); }
 .summary { border-left: 5px solid var(--green); background: rgba(85,239,196,0.09); padding: 14px 16px; border-radius: 14px; color: #eafff9; margin: 0 0 16px; line-height: 1.45; } .disclaimer { border-left-color: var(--green); background: rgba(85,239,196,0.09); color: #eafff9; }
 .grid { display: grid; grid-template-columns: repeat(12,1fr); gap: 20px; margin-top: 22px; } .card { grid-column: span 12; border: 1px solid var(--line); background: var(--panel); border-radius: 24px; padding: 24px; box-shadow: 0 18px 60px rgba(0,0,0,0.25), inset 0 0 30px rgba(255,255,255,0.025); } .card.half { grid-column: span 6; } @media (max-width: 980px) { .card.half { grid-column: span 12; } }
 .card h2 { margin: 0 0 16px; font-size: 24px; letter-spacing: -0.02em; } .card h2 span { color: var(--cyan); text-shadow: 0 0 18px rgba(33,212,253,0.45); } .pipeline { display: grid; grid-template-columns: repeat(6,1fr); gap: 14px; } @media (max-width: 1180px) { .pipeline { grid-template-columns: repeat(3,1fr); } } @media (max-width: 720px) { .pipeline { grid-template-columns: 1fr; } }
@@ -3923,17 +4077,17 @@ css = """
 .hit-card { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr; gap: 14px; } @media (max-width: 900px) { .hit-card { grid-template-columns: 1fr; } } .hit-box { border-radius: 18px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.055); padding: 16px; } .hit-box .small { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; font-weight: 800; } .hit-box .big { font-size: 22px; font-weight: 900; margin-top: 6px; color: #fff; word-break: break-word; }
 .top-grid { display: grid; grid-template-columns: repeat(5, minmax(180px, 1fr)); gap: 14px; margin-bottom: 12px; } @media (max-width: 1180px) { .top-grid { grid-template-columns: repeat(2, 1fr); } } @media (max-width: 720px) { .top-grid { grid-template-columns: 1fr; } } .top-card { border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.055); border-radius: 18px; padding: 16px; } .top-rank { color: var(--green); font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: .08em; } .top-name { font-size: 20px; font-weight: 900; line-height: 1.05; margin: 8px 0; word-break: break-word; } .top-label, .top-stats { color: var(--muted); font-size: 12px; line-height: 1.35; } .top-card p { color: #dbeafe; font-size: 13px; line-height: 1.35; }
 .conf { display: inline-block; padding: 5px 9px; border-radius: 999px; font-weight: 900; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; } .conf-high { background: rgba(85,239,196,.16); color: #b7fff0; border: 1px solid rgba(85,239,196,.45); } .conf-medium { background: rgba(255,209,102,.16); color: #fff0b8; border: 1px solid rgba(255,209,102,.45); } .conf-low { background: rgba(255,122,182,.16); color: #ffd0e7; border: 1px solid rgba(255,122,182,.45); } .conf-none { background: rgba(148,163,184,.16); color: #dbeafe; border: 1px solid rgba(148,163,184,.35); }
-.plot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; } @media (max-width: 1000px) { .plot-grid { grid-template-columns: 1fr; } } .plot svg { width: 100%; height: auto; border-radius: 18px; border: 1px solid rgba(148,163,184,.18); } .empty, .note { color: var(--muted); } .footer { margin-top: 26px; color: var(--muted); text-align: center; font-size: 13px; }
+.plot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; } @media (max-width: 1000px) { .plot-grid { grid-template-columns: 1fr; } } .snp-plot-stack { display: grid; grid-template-columns: 1fr; gap: 18px; width: 100%; } .snp-plot-stack .plot { width: 100%; } .plot svg { width: 100%; height: auto; border-radius: 18px; border: 1px solid rgba(148,163,184,.18); } .empty, .note { color: var(--muted); } .footer { margin-top: 26px; color: var(--muted); text-align: center; font-size: 13px; }
 """
 
-html_doc = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{safe_text(prefix)} | rMAP-GWAS report</title><style>{css}</style></head><body><div class="page"><section class="hero"><div class="hero-grid"><div><div class="kicker">Cromwell workflow report</div><h1><span class="gradient-text">rMAP-GWAS</span></h1><p class="subtitle">Reproducible microbial GWAS from paired-end reads for one explicitly coded binary phenotype per run, including gene presence/absence GWAS, optional SNP marker GWAS, population-structure visualization, post-GWAS reference annotation, and ranked association reporting.</p><div class="badges"><span class="badge">Cromwell</span><span class="badge">Dockerized</span><span class="badge">Distance-corrected pyseer</span><span class="badge">Multi-pathogen ready</span><span class="badge">Explicit phenotype coding</span><span class="badge">AMR interpretation guardrails</span><span class="badge">GenBank annotation rescue</span><span class="badge">Optional SNP GWAS</span></div><nav class="nav"><a href="#phenotype">Phenotype legend</a><a href="#amr-scope">AMR scope</a><a href="#pipeline">Pipeline</a><a href="#structure">Population structure</a><a href="#plots">Gene plots</a><a href="#snp">SNP GWAS</a><a href="#gubbins">Recombination</a><a href="#hits">Priority hits</a><a href="#annotation">Reference annotation</a><a href="#validation">Validation</a><a href="#outputs">Outputs</a></nav><div class="callout"><strong>GWAS phenotype being tested:</strong> {safe_text(phenotype_scope)}</div><div class="callout"><strong>Association scope:</strong> {safe_text(amr_guardrail)}</div><div class="callout"><strong>Smoke-test/sample-size note:</strong> This run has {total} samples ({cases} {safe_text(cases_label)} and {controls} {safe_text(controls_label)}). It is useful for workflow validation, but association results should not be treated as final biological or clinical findings without larger cohorts and independent validation.</div></div><div class="metrics"><div class="metric"><div class="label">{safe_text(cases_label)}</div><div class="num">{cases}</div></div><div class="metric"><div class="label">{safe_text(controls_label)}</div><div class="num">{controls}</div></div><div class="metric"><div class="label">Total samples</div><div class="num">{total}</div></div><div class="metric"><div class="label">Top gene hit</div><div class="num smalltop">{safe_text(display_name)}</div><div class="sub">{safe_text(display_subtitle)}</div></div></div></div></section><section class="grid">
+html_doc = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{safe_text(prefix)} | rMAP-GWAS report</title><style>{css}</style></head><body><div class="page"><section class="hero"><div class="hero-grid"><div><div class="kicker">Cromwell workflow report</div><h1><span class="gradient-text">rMAP-GWAS</span></h1><p class="subtitle">Reproducible microbial GWAS from paired-end reads for one explicitly coded binary phenotype per run, including gene presence/absence GWAS, optional SNP marker GWAS, population-structure visualization, post-GWAS reference annotation, and ranked association reporting.</p><div class="badges"><span class="badge">Cromwell</span><span class="badge">Dockerized</span><span class="badge">Distance-corrected pyseer</span><span class="badge">Multi-pathogen ready</span><span class="badge">Explicit phenotype coding</span><span class="badge">AMR interpretation guardrails</span><span class="badge">GenBank annotation rescue</span><span class="badge">Optional SNP GWAS</span></div><nav class="nav"><a href="#phenotype">Phenotype legend</a><a href="#amr-scope">AMR scope</a><a href="#pipeline">Pipeline</a><a href="#structure">Population structure</a><a href="#plots">Gene plots</a><a href="#snp">SNP GWAS</a><a href="#gubbins">Recombination</a><a href="#hits">Priority hits</a><a href="#annotation">Reference annotation</a><a href="#validation">Validation</a><a href="#outputs">Outputs</a></nav><div class="callout"><strong>GWAS phenotype being tested:</strong> {safe_text(phenotype_scope)}</div><div class="callout"><strong>Association scope:</strong> {safe_text(amr_guardrail)}</div><div class="callout"><strong>Sample-size interpretation note:</strong> This run has {total} samples ({cases} {safe_text(cases_label)} and {controls} {safe_text(controls_label)}). Interpret association strength in relation to cohort size, phenotype balance, population structure, and independent validation before making biological, clinical, or public-health claims.</div></div><div class="metrics"><div class="metric"><div class="label">{safe_text(cases_label)}</div><div class="num">{cases}</div></div><div class="metric"><div class="label">{safe_text(controls_label)}</div><div class="num">{controls}</div></div><div class="metric"><div class="label">Total samples</div><div class="num">{total}</div></div><div class="metric"><div class="label">Top gene hit</div><div class="num smalltop">{safe_text(display_name)}</div><div class="sub">{safe_text(display_subtitle)}</div></div></div></div></section><section class="grid">
 <div class="card" id="phenotype"><h2><span>01</span> Phenotype legend and coding</h2><div class="callout"><strong>Phenotype tested:</strong> Binary phenotype <code>{safe_text(phenotype_tested)}</code>. <strong>Configured contrast:</strong> {safe_text(phenotype_question)}. The report displays the metadata-derived biological contrast throughout the HTML: <strong>{safe_text(case_label)} = 1</strong> and <strong>{safe_text(control_label)} = 0</strong>.</div>{legend_table_html()}</div>
 <div class="card" id="amr-scope"><h2><span>01b</span> AMR phenotype and association scope</h2>{amr_scope_table_html(amr_like_phenotype)}</div>
 <div class="card" id="pipeline"><h2><span>02</span> Workflow architecture</h2><div class="pipeline"><div class="step"><div class="icon">01</div><div class="idx">Input</div><div class="title">Sample-set validation</div><p>Checks sample names, paired FASTQs, group labels, and {safe_text(case_label)}/{safe_text(control_label)} balance.</p></div><div class="step"><div class="icon">02</div><div class="idx">QC</div><div class="title">fastp trimming</div><p>Generates cleaned reads plus QC summaries.</p></div><div class="step"><div class="icon">03</div><div class="idx">Assembly</div><div class="title">Shovill</div><p>Builds de novo genome assemblies using safe Cromwell memory handling.</p></div><div class="step"><div class="icon">04</div><div class="idx">Annotation</div><div class="title">Prokka + Panaroo</div><p>Creates GFF annotations and pangenome gene matrices.</p></div><div class="step"><div class="icon">05</div><div class="idx">GWAS</div><div class="title">Mash + pyseer</div><p>Runs population-structure-aware gene and optional SNP association testing.</p></div><div class="step"><div class="icon">06</div><div class="idx">Rescue</div><div class="title">GenBank annotation</div><p>Maps prioritized pangenome/SNP markers to reference GenBank features where possible.</p></div></div></div>
 <div class="card half"><h2><span>03</span> Run configuration</h2><div class="hit-card"><div class="hit-box"><div class="small">Reference name</div><div class="big">{safe_text(reference_name)}</div></div><div class="hit-box"><div class="small">Species</div><div class="big">{safe_text(reference_species)}</div></div><div class="hit-box"><div class="small">Reference Docker</div><div class="big">{safe_text(reference_docker)}</div></div><div class="hit-box"><div class="small">Generated UTC</div><div class="big">{safe_text(generated)}</div></div></div><div class="callout"><strong>Phenotype coding:</strong> {safe_text(case_label)} = 1; {safe_text(control_label)} = 0. GWAS mode: {safe_text(gwas_mode)}; SNP branch: {safe_text(snp_status)}; Gubbins recombination module: {safe_text(gubbins_effective)}; container backend recorded as {safe_text(container_backend)}.</div></div>
 <div class="card half"><h2><span>04</span> Top-hit GenBank annotation rescue</h2><div class="hit-card"><div class="hit-box"><div class="small">Display name</div><div class="big">{safe_text(display_name)}</div></div><div class="hit-box"><div class="small">Pangenome/SNP marker</div><div class="big">{safe_text(feature_id)}</div></div><div class="hit-box"><div class="small">Reference locus / gene</div><div class="big">{safe_text((reference_locus_tag or 'not matched') + ' / ' + (reference_gene or 'not assigned'))}</div></div><div class="hit-box"><div class="small">Confidence</div><div class="big"><span class="conf {confidence_badge_class(annotation_confidence)}">{safe_text(annotation_confidence or 'none')}</span></div></div></div><div class="callout"><strong>Top-hit interpretation:</strong> {safe_text(interpretation_note)} Reference identity: {safe_text(reference_identity or 'NA')}%; reference coverage: {safe_text(reference_coverage or 'NA')}%. Product: {safe_text(reference_product or product or 'not assigned')}.</div></div>
-<div class="card" id="structure"><h2><span>05</span> Population structure</h2><div class="callout"><strong>Interpretation check:</strong> Review {safe_text(case_label)}/{safe_text(control_label)} clustering before interpreting top hits. Strong phenotype-lineage clustering can indicate lineage-associated markers rather than causal phenotype-associated variation.</div><div class="plot-grid"><div class="plot">{population_pca_svg}</div><div class="plot">{kinship_heatmap_svg}</div></div><pre>{safe_text(population_structure_summary_txt)}</pre></div>
-<div class="card" id="plots"><h2><span>06</span> Gene presence/absence GWAS plots</h2><div class="callout"><strong>Plot note:</strong> The gene association plot is a feature-index GWAS plot, not a full reference-coordinate Manhattan plot. Significant points are interpreted against the {safe_text(case_label)} versus {safe_text(control_label)} phenotype.</div><div class="plot-grid"><div class="plot">{manhattan_svg}</div><div class="plot">{qq_svg}</div></div><pre>{safe_text(plot_summary_txt)}</pre></div>
+<div class="card" id="structure"><h2><span>05</span> Population structure</h2><div class="callout"><strong>Interpretation check:</strong> Review {safe_text(case_label)}/{safe_text(control_label)} clustering before interpreting top hits. Strong phenotype-lineage clustering can indicate lineage-associated markers rather than causal phenotype-associated variation.</div><div class="callout"><strong>Lay interpretation — PCoA:</strong> {safe_text(pcoa_layman)}</div><div class="plot-grid"><div class="plot">{population_pca_svg}</div><div class="plot">{kinship_heatmap_svg}</div></div><pre>{safe_text(population_structure_summary_txt)}</pre></div>
+<div class="card" id="plots"><h2><span>06</span> Gene presence/absence GWAS plots</h2><div class="callout"><strong>Plot note:</strong> The gene association plot is a feature-index GWAS plot, not a full reference-coordinate Manhattan plot. Significant points are interpreted against the {safe_text(case_label)} versus {safe_text(control_label)} phenotype.</div><div class="callout"><strong>Lay interpretation — gene Manhattan:</strong> {safe_text(gene_manhattan_layman)}</div><div class="callout"><strong>Lay interpretation — gene QQ:</strong> {safe_text(gene_qq_layman)}</div><div class="plot-grid"><div class="plot">{manhattan_svg}</div><div class="plot">{qq_svg}</div></div><pre>{safe_text(plot_summary_txt)}</pre></div>
 {snp_section}
 {gubbins_section}
 <div class="card" id="hits"><h2><span>07</span> Top priority gene presence/absence GWAS hits</h2>{top_cards(top_rows, 5)}<h3>Prioritized hit table</h3>{table_from_tsv('~{top_priority_hits}', max_rows=100, reorder=True)}</div>
@@ -3949,9 +4103,9 @@ section_summaries = {
     "pipeline": f"Reads are quality-trimmed, assembled, annotated with {annotation_engine}, summarized as a Panaroo pangenome, tested with pyseer, and then annotated against the selected reference package.",
     "run-config": f"The report records the reference package, species label, annotation engine, GWAS mode, SNP branch, Gubbins status, and container backend so that the run can be audited and repeated.",
     "top-hit": f"The top gene hit is a candidate association for the {case_label} versus {control_label} contrast. Treat it as a hypothesis until supported by sample size, population-structure checks, annotation confidence, and independent validation.",
-    "structure": f"Use the PCoA and kinship matrix to check whether {case_label} and {control_label} separate by lineage. Strong separation may indicate lineage-associated markers rather than phenotype-associated biology.",
-    "plots": "The gene plot and QQ plot provide a first-pass view of association strength and inflation. Outliers should be interpreted together with the priority table and annotation confidence.",
-    "snp": f"SNP GWAS is most useful for mutation-mediated phenotypes. Review population structure and, where relevant, recombination filtering before prioritizing SNP markers for the {case_label} versus {control_label} contrast.",
+    "structure": pcoa_layman,
+    "plots": f"Gene Manhattan: {gene_manhattan_layman} Gene QQ: {gene_qq_layman}",
+    "snp": f"SNP Manhattan: {snp_manhattan_layman} SNP QQ: {snp_qq_layman}",
     "gubbins": "The recombination panel documents whether Gubbins was requested, whether filtering succeeded, and whether the SNP GWAS used the filtered or original VCF.",
     "hits": "The prioritized table ranks candidate gene presence/absence associations by statistical evidence, enrichment direction, effect size, and annotation support.",
     "allhits": "This section lists all significant gene presence/absence hits at the selected threshold; use it for broader review beyond the top candidates.",
@@ -3965,7 +4119,7 @@ html_doc = add_section_summaries_and_navigation(html_doc, section_summaries)
 Path(prefix + "_report.html").write_text(html_doc)
 provenance = {
     "workflow": "rMAP-GWAS",
-    "workflow_version": "0.4.0-phenotype-display-labels",
+    "workflow_version": "0.4.1-snp-report-layout-patch",
     "description": "Modular microbial GWAS with metadata-derived phenotype display labels, optional Bakta annotation, section navigation, and rule-based interpretation summaries in HTML reports.",
     "gwas_mode": gwas_mode,
     "annotation_engine": annotation_engine,
@@ -3989,6 +4143,7 @@ provenance = {
     "total_samples": total,
     "top_hit": {"feature_id": feature_id, "display_name": display_name, "display_label": display_subtitle, "annotation_confidence": annotation_confidence},
     "plots": {"gene_feature_index_association_plot": prefix + "_manhattan.svg", "gene_qq": prefix + "_qq.svg", "population_pca": prefix + "_population_pca.svg", "kinship_heatmap": prefix + "_kinship_heatmap.svg", "snp_feature_index_association_plot": prefix + "_SNP_manhattan.svg", "snp_qq": prefix + "_SNP_qq.svg"},
+    "automated_plot_interpretations": {"gene_manhattan": gene_manhattan_layman, "gene_qq": gene_qq_layman, "snp_manhattan": snp_manhattan_layman, "snp_qq": snp_qq_layman, "pcoa": pcoa_layman},
     "gubbins_outputs": {"summary": Path('~{gubbins_summary}').name, "filtered_alignment": Path('~{gubbins_filtered_alignment}').name, "recombination_gff": Path('~{gubbins_recombination_gff}').name, "log": Path('~{gubbins_log}').name},
     "generated_utc": generated
 }

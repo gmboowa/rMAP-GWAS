@@ -1,0 +1,3 @@
+class	numeric_value	input_group_label	metadata_display_column	metadata_values	n_samples	display_label	display_label_plural
+case	1	case	VRE_Resistant_vs_Sensitive_VRE	vancomycin resistant	50	case (vancomycin resistant)	cases (vancomycin resistant)
+control	0	control	VRE_Resistant_vs_Sensitive_VRE	vancomycin sensitive	50	control (vancomycin sensitive)	controls (vancomycin sensitive)
