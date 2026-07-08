@@ -3863,82 +3863,121 @@ def is_amr_phenotype(phenotype_name, legend):
 def phenotype_scope_text(phenotype_tested, case_label, control_label, amr_like):
     if amr_like:
         return (
-            f"This run is framed as an AMR GWAS. The primary phenotype is phenotypic resistance versus "
-            f"susceptibility for the configured drug, drug class, or AMR trait. In the pyseer model, "
-            f"{case_label} is coded as 1 and {control_label} is coded as 0. Confirm that resistant isolates "
-            f"are mapped to the case class and susceptible isolates are mapped to the control class before "
-            f"interpreting candidate markers."
+            f"This run is framed as an AMR GWAS because the configured phenotype or group labels indicate "
+            f"resistance/susceptibility. In the pyseer model, {case_label} is coded as 1 and "
+            f"{control_label} is coded as 0. Confirm that resistant isolates are mapped to the case class "
+            f"and susceptible isolates are mapped to the control class before interpreting candidate markers."
         )
     return (
         f"This run tests one explicitly configured binary phenotype only: {phenotype_tested}. "
-        f"The biological contrast used by the model is {case_label} versus {control_label}. "
-        f"For AMR analyses, configure the input metadata so that phenotypically resistant isolates are "
-        f"case=1 and susceptible isolates are control=0."
+        f"The model contrast is {case_label} coded as 1 versus {control_label} coded as 0. "
+        f"This report does not assume the contrast is antimicrobial resistance unless the configured phenotype "
+        f"or group labels indicate resistance/susceptibility. Interpret candidate markers only as associations "
+        f"with this configured phenotype."
     )
 
 
 def amr_guardrail_text(amr_like):
-    base = (
-        "Association results should be interpreted as statistical marker-phenotype associations, not as final "
-        "clinical resistance calls. Gene presence/absence is the primary marker set; optional SNP GWAS adds "
-        "point-mutation markers. Sequencing depth, assembly quality, species background, multiple genes in the "
-        "same antibiotic class, plasmid linkage, and phenotype quality should be reviewed during filtering and "
-        "interpretation."
-    )
     if amr_like:
-        return "AMR-specific guardrail: " + base
-    return "General guardrail, especially for AMR use cases: " + base
+        return (
+            "AMR-specific guardrail: association results should be interpreted as statistical marker-phenotype "
+            "associations, not as final clinical resistance calls. Gene presence/absence is the primary marker set; "
+            "optional SNP GWAS adds point-mutation markers. Sequencing depth, assembly quality, species background, "
+            "multiple genes in the same antibiotic class, plasmid linkage, and phenotype quality should be reviewed "
+            "during filtering and interpretation."
+        )
+    return (
+        "General association guardrail: this is a marker-phenotype GWAS for the configured binary contrast, not "
+        "automatically an AMR analysis. Gene presence/absence is the primary marker set; optional SNP GWAS adds "
+        "point-mutation markers. Review sequencing depth, assembly quality, population structure, sampling design, "
+        "and phenotype definition before making biological or public-health claims."
+    )
 
 
 def amr_scope_table_html(amr_like):
     intro = phenotype_scope_text(phenotype_tested, case_label, control_label, amr_like)
-    rows = [
-        (
-            "Phenotype clarity",
-            "One binary phenotype is tested per run using the phenotype TSV supplied to pyseer.",
-            "For AMR, label the contrast explicitly as phenotypically resistant versus susceptible and verify case/control coding before launch."
-        ),
-        (
-            "Gene presence/absence",
-            "The primary GWAS branch tests pangenome gene-cluster presence/absence with population-structure correction.",
-            "A resistance gene found in some susceptible isolates may reflect gene inactivity, expression differences, breakpoint issues, linkage, or phenotype error; interpret enrichment rather than presence alone."
-        ),
-        (
-            "Point mutations",
-            "Point mutations are not represented by gene presence/absence; they are assessed only when the optional SNP GWAS branch is enabled.",
-            "Use do_snp_gwas=true for mutation-mediated resistance, such as many MTBC drug-resistance phenotypes, and interpret SNP hits alongside known resistance catalogs where available."
-        ),
-        (
-            "Species background",
-            "Species labels are recorded as run provenance, but species is not automatically included as a regression covariate in the default model.",
-            "Avoid pooling divergent species without review. Prefer species-specific or lineage-aware analyses when associations may differ by species."
-        ),
-        (
-            "Sequencing depth and assembly quality",
-            "The workflow generates FASTQ/assembly QC outputs, but read depth and assembly quality are not automatically modeled as covariates.",
-            "Filter low-depth or poor-quality samples and inspect gene absence in susceptible/resistant groups before making biological claims."
-        ),
-        (
-            "Multiple resistance genes in the same class",
-            "Prioritized hits are marker-level associations and may be correlated through plasmids, mobile elements, clonal background, or co-carriage.",
-            "For antibiotic-class interpretation, inspect gene co-occurrence and consider class-level summaries or follow-up multivariable models outside this summary report."
-        ),
-        (
-            "Population structure and linkage",
-            "Mash distances/MDS and population-structure plots are generated to help assess lineage confounding.",
-            "If resistant and susceptible isolates cluster by lineage or outbreak, treat hits as candidates requiring validation rather than causal resistance determinants."
-        )
-    ]
+    if amr_like:
+        third_header = "Recommended AMR interpretation"
+        rows = [
+            (
+                "Phenotype clarity",
+                "One binary phenotype is tested per run using the phenotype TSV supplied to pyseer.",
+                "For AMR, label the contrast explicitly as phenotypically resistant versus susceptible and verify case/control coding before launch."
+            ),
+            (
+                "Gene presence/absence",
+                "The primary GWAS branch tests pangenome gene-cluster presence/absence with population-structure correction.",
+                "A resistance gene found in some susceptible isolates may reflect gene inactivity, expression differences, breakpoint issues, linkage, or phenotype error; interpret enrichment rather than presence alone."
+            ),
+            (
+                "Point mutations",
+                "Point mutations are not represented by gene presence/absence; they are assessed only when the optional SNP GWAS branch is enabled.",
+                "Use do_snp_gwas=true for mutation-mediated resistance, such as many MTBC drug-resistance phenotypes, and interpret SNP hits alongside known resistance catalogs where available."
+            ),
+            (
+                "Species background",
+                "Species labels are recorded as run provenance, but species is not automatically included as a regression covariate in the default model.",
+                "Avoid pooling divergent species without review. Prefer species-specific or lineage-aware analyses when associations may differ by species."
+            ),
+            (
+                "Sequencing depth and assembly quality",
+                "The workflow generates FASTQ/assembly QC outputs, but read depth and assembly quality are not automatically modeled as covariates.",
+                "Filter low-depth or poor-quality samples and inspect gene absence in susceptible/resistant groups before making biological claims."
+            ),
+            (
+                "Multiple resistance genes in the same class",
+                "Prioritized hits are marker-level associations and may be correlated through plasmids, mobile elements, clonal background, or co-carriage.",
+                "For antibiotic-class interpretation, inspect gene co-occurrence and consider class-level summaries or follow-up multivariable models outside this summary report."
+            ),
+            (
+                "Population structure and linkage",
+                "Mash distances/MDS and population-structure plots are generated to help assess lineage confounding.",
+                "If resistant and susceptible isolates cluster by lineage or outbreak, treat hits as candidates requiring validation rather than causal resistance determinants."
+            )
+        ]
+    else:
+        third_header = "Recommended interpretation"
+        rows = [
+            (
+                "Phenotype clarity",
+                "One binary phenotype is tested per run using the phenotype TSV supplied to pyseer.",
+                "Use phenotype_name and phenotype_display_values to show the real biological contrast, for example specimen_source, HIV_status, MRSA_vs_MSSA, or rpoB_marker_status."
+            ),
+            (
+                "Gene presence/absence",
+                "The primary GWAS branch tests pangenome gene-cluster presence/absence with population-structure correction.",
+                "Interpret hits as gene-cluster associations with the configured phenotype, not as resistance genes unless the phenotype is explicitly an AMR contrast."
+            ),
+            (
+                "Point mutations",
+                "Point mutations are assessed only when the optional SNP GWAS branch is enabled.",
+                "Use do_snp_gwas=true for marker-defined or mutation-driven contrasts, then interpret SNP hits against the configured case/control labels."
+            ),
+            (
+                "Sample metadata and sampling design",
+                "The report displays the metadata-derived case/control labels, but metadata columns are not automatically modeled as covariates.",
+                "For phenotypes such as specimen source, HIV status, geography, host category, or marker carriage, check whether lineage, site, or sampling design explains the association."
+            ),
+            (
+                "Sequencing depth and assembly quality",
+                "The workflow generates FASTQ/assembly QC outputs, but read depth and assembly quality are not automatically modeled as covariates.",
+                "Filter low-depth or poor-quality samples and confirm that apparent gene absence is not caused by technical dropout."
+            ),
+            (
+                "Population structure and linkage",
+                "Mash distances/MDS and population-structure plots are generated to help assess lineage confounding.",
+                "If the configured phenotype clusters by lineage or outbreak, treat hits as candidate associations requiring validation rather than causal determinants."
+            )
+        ]
     out = [
-        f"<div class=\"callout\"><strong>Configured phenotype:</strong> {safe_text(intro)}</div>",
-        "<div class=\"table-wrap\"><table>",
-        "<thead><tr><th>Interpretation issue</th><th>Current workflow/report behavior</th><th>Recommended AMR interpretation</th></tr></thead><tbody>"
+        f"<div class="callout"><strong>Configured phenotype:</strong> {safe_text(intro)}</div>",
+        "<div class="table-wrap"><table>",
+        f"<thead><tr><th>Interpretation issue</th><th>Current workflow/report behavior</th><th>{safe_text(third_header)}</th></tr></thead><tbody>"
     ]
     for concern, behavior, recommendation in rows:
         out.append(f"<tr><td>{safe_text(concern)}</td><td>{safe_text(behavior)}</td><td>{safe_text(recommendation)}</td></tr>")
     out.append("</tbody></table></div>")
     return "\n".join(out)
-
 
 
 def section_tools():
@@ -4098,9 +4137,9 @@ css = """
 .plot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; } @media (max-width: 1000px) { .plot-grid { grid-template-columns: 1fr; } } .snp-plot-stack { display: grid; grid-template-columns: 1fr; gap: 18px; width: 100%; } .snp-plot-stack .plot { width: 100%; } .plot svg { width: 100%; height: auto; border-radius: 18px; border: 1px solid rgba(148,163,184,.18); } .empty, .note { color: var(--muted); } .footer { margin-top: 26px; color: var(--muted); text-align: center; font-size: 13px; }
 """
 
-html_doc = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{safe_text(prefix)} | rMAP-GWAS report</title><style>{css}</style></head><body><div class="page"><section class="hero"><div class="hero-grid"><div><div class="kicker">Cromwell workflow report</div><h1><span class="gradient-text">rMAP-GWAS</span></h1><p class="subtitle">Reproducible microbial GWAS from paired-end reads for one explicitly coded binary phenotype per run, including gene presence/absence GWAS, optional SNP marker GWAS, population-structure visualization, post-GWAS reference annotation, and ranked association reporting.</p><div class="badges"><span class="badge">Cromwell</span><span class="badge">Dockerized</span><span class="badge">Distance-corrected pyseer</span><span class="badge">Multi-pathogen ready</span><span class="badge">Explicit phenotype coding</span><span class="badge">AMR interpretation guardrails</span><span class="badge">GenBank annotation rescue</span><span class="badge">Optional SNP GWAS</span></div><nav class="nav"><a href="#phenotype">Phenotype legend</a><a href="#amr-scope">AMR scope</a><a href="#pipeline">Pipeline</a><a href="#structure">Population structure</a><a href="#plots">Gene plots</a><a href="#snp">SNP GWAS</a><a href="#gubbins">Recombination</a><a href="#hits">Priority hits</a><a href="#annotation">Reference annotation</a><a href="#validation">Validation</a><a href="#outputs">Outputs</a></nav><div class="callout"><strong>GWAS phenotype being tested:</strong> {safe_text(phenotype_scope)}</div><div class="callout"><strong>Association scope:</strong> {safe_text(amr_guardrail)}</div><div class="callout"><strong>Sample-size interpretation note:</strong> This run has {total} samples ({cases} {safe_text(cases_label)} and {controls} {safe_text(controls_label)}). Interpret association strength in relation to cohort size, phenotype balance, population structure, and independent validation before making biological, clinical, or public-health claims.</div></div><div class="metrics"><div class="metric"><div class="label">{safe_text(cases_label)}</div><div class="num">{cases}</div></div><div class="metric"><div class="label">{safe_text(controls_label)}</div><div class="num">{controls}</div></div><div class="metric"><div class="label">Total samples</div><div class="num">{total}</div></div><div class="metric"><div class="label">Top gene hit</div><div class="num smalltop">{safe_text(display_name)}</div><div class="sub">{safe_text(display_subtitle)}</div></div></div></div></section><section class="grid">
+html_doc = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{safe_text(prefix)} | rMAP-GWAS report</title><style>{css}</style></head><body><div class="page"><section class="hero"><div class="hero-grid"><div><div class="kicker">Cromwell workflow report</div><h1><span class="gradient-text">rMAP-GWAS</span></h1><p class="subtitle">Reproducible microbial GWAS from paired-end reads for one explicitly coded binary phenotype per run, including gene presence/absence GWAS, optional SNP marker GWAS, population-structure visualization, post-GWAS reference annotation, and ranked association reporting.</p><div class="badges"><span class="badge">Cromwell</span><span class="badge">Dockerized</span><span class="badge">Distance-corrected pyseer</span><span class="badge">Multi-pathogen ready</span><span class="badge">Explicit phenotype coding</span><span class="badge">Phenotype interpretation guardrails</span><span class="badge">GenBank annotation rescue</span><span class="badge">Optional SNP GWAS</span></div><nav class="nav"><a href="#phenotype">Phenotype legend</a><a href="#amr-scope">Association scope</a><a href="#pipeline">Pipeline</a><a href="#structure">Population structure</a><a href="#plots">Gene plots</a><a href="#snp">SNP GWAS</a><a href="#gubbins">Recombination</a><a href="#hits">Priority hits</a><a href="#annotation">Reference annotation</a><a href="#validation">Validation</a><a href="#outputs">Outputs</a></nav><div class="callout"><strong>GWAS phenotype being tested:</strong> {safe_text(phenotype_scope)}</div><div class="callout"><strong>Association scope:</strong> {safe_text(amr_guardrail)}</div><div class="callout"><strong>Sample-size interpretation note:</strong> This run has {total} samples ({cases} {safe_text(cases_label)} and {controls} {safe_text(controls_label)}). Interpret association strength in relation to cohort size, phenotype balance, population structure, and independent validation before making biological, clinical, or public-health claims.</div></div><div class="metrics"><div class="metric"><div class="label">{safe_text(cases_label)}</div><div class="num">{cases}</div></div><div class="metric"><div class="label">{safe_text(controls_label)}</div><div class="num">{controls}</div></div><div class="metric"><div class="label">Total samples</div><div class="num">{total}</div></div><div class="metric"><div class="label">Top gene hit</div><div class="num smalltop">{safe_text(display_name)}</div><div class="sub">{safe_text(display_subtitle)}</div></div></div></div></section><section class="grid">
 <div class="card" id="phenotype"><h2><span>01</span> Phenotype legend and coding</h2><div class="callout"><strong>Phenotype tested:</strong> Binary phenotype <code>{safe_text(phenotype_tested)}</code>. <strong>Configured contrast:</strong> {safe_text(phenotype_question)}. The report displays the metadata-derived biological contrast throughout the HTML: <strong>{safe_text(case_label)} = 1</strong> and <strong>{safe_text(control_label)} = 0</strong>.</div>{legend_table_html()}</div>
-<div class="card" id="amr-scope"><h2><span>01b</span> AMR phenotype and association scope</h2>{amr_scope_table_html(amr_like_phenotype)}</div>
+<div class="card" id="amr-scope"><h2><span>01b</span> Phenotype association scope</h2>{amr_scope_table_html(amr_like_phenotype)}</div>
 <div class="card" id="pipeline"><h2><span>02</span> Workflow architecture</h2><div class="pipeline"><div class="step"><div class="icon">01</div><div class="idx">Input</div><div class="title">Sample-set validation</div><p>Checks sample names, paired FASTQs, group labels, and {safe_text(case_label)}/{safe_text(control_label)} balance.</p></div><div class="step"><div class="icon">02</div><div class="idx">QC</div><div class="title">fastp trimming</div><p>Generates cleaned reads plus QC summaries.</p></div><div class="step"><div class="icon">03</div><div class="idx">Assembly</div><div class="title">Shovill</div><p>Builds de novo genome assemblies using safe Cromwell memory handling.</p></div><div class="step"><div class="icon">04</div><div class="idx">Annotation</div><div class="title">Prokka + Panaroo</div><p>Creates GFF annotations and pangenome gene matrices.</p></div><div class="step"><div class="icon">05</div><div class="idx">GWAS</div><div class="title">Mash + pyseer</div><p>Runs population-structure-aware gene and optional SNP association testing.</p></div><div class="step"><div class="icon">06</div><div class="idx">Rescue</div><div class="title">GenBank annotation</div><p>Maps prioritized pangenome/SNP markers to reference GenBank features where possible.</p></div></div></div>
 <div class="card half"><h2><span>03</span> Run configuration</h2><div class="hit-card"><div class="hit-box"><div class="small">Reference name</div><div class="big">{safe_text(reference_name)}</div></div><div class="hit-box"><div class="small">Species</div><div class="big">{safe_text(reference_species)}</div></div><div class="hit-box"><div class="small">Reference Docker</div><div class="big">{safe_text(reference_docker)}</div></div><div class="hit-box"><div class="small">Generated UTC</div><div class="big">{safe_text(generated)}</div></div></div><div class="callout"><strong>Phenotype coding:</strong> {safe_text(case_label)} = 1; {safe_text(control_label)} = 0. GWAS mode: {safe_text(gwas_mode)}; SNP branch: {safe_text(snp_status)}; Gubbins recombination module: {safe_text(gubbins_effective)}; container backend recorded as {safe_text(container_backend)}.</div></div>
 <div class="card half"><h2><span>04</span> Top-hit GenBank annotation rescue</h2><div class="hit-card"><div class="hit-box"><div class="small">Display name</div><div class="big">{safe_text(display_name)}</div></div><div class="hit-box"><div class="small">Pangenome/SNP marker</div><div class="big">{safe_text(feature_id)}</div></div><div class="hit-box"><div class="small">Reference locus / gene</div><div class="big">{safe_text((reference_locus_tag or 'not matched') + ' / ' + (reference_gene or 'not assigned'))}</div></div><div class="hit-box"><div class="small">Confidence</div><div class="big"><span class="conf {confidence_badge_class(annotation_confidence)}">{safe_text(annotation_confidence or 'none')}</span></div></div></div><div class="callout"><strong>Top-hit interpretation:</strong> {safe_text(interpretation_note)} Reference identity: {safe_text(reference_identity or 'NA')}%; reference coverage: {safe_text(reference_coverage or 'NA')}%. Product: {safe_text(reference_product or product or 'not assigned')}.</div></div>
@@ -4117,7 +4156,7 @@ html_doc = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta 
 
 section_summaries = {
     "phenotype": f"This section confirms the exact binary contrast used by pyseer: {case_label} is coded as 1 and {control_label} is coded as 0. Confirm that these labels match the study metadata before interpreting associations.",
-    "amr-scope": f"This section addresses AMR-specific interpretation concerns: resistance versus susceptibility coding, species background, depth and assembly quality, SNP/point mutations, and co-occurring resistance genes for the {case_label} versus {control_label} contrast.",
+    "amr-scope": (f"This section addresses AMR-specific interpretation concerns for resistance/susceptibility contrasts." if amr_like_phenotype else f"This section explains how to interpret marker associations for the configured phenotype contrast: {case_label} versus {control_label}."),
     "pipeline": f"Reads are quality-trimmed, assembled, annotated with {annotation_engine}, summarized as a Panaroo pangenome, tested with pyseer, and then annotated against the selected reference package.",
     "run-config": f"The report records the reference package, species label, annotation engine, GWAS mode, SNP branch, Gubbins status, and container backend so that the run can be audited and repeated.",
     "top-hit": f"The top gene hit is a candidate association for the {case_label} versus {control_label} contrast. Treat it as a hypothesis until supported by sample size, population-structure checks, annotation confidence, and independent validation.",
@@ -4138,7 +4177,7 @@ Path(prefix + "_report.html").write_text(html_doc)
 provenance = {
     "workflow": "rMAP-GWAS",
     "workflow_version": "0.4.1-snp-report-layout-patch",
-    "description": "Modular microbial GWAS with metadata-derived phenotype display labels, optional Bakta annotation, section navigation, and rule-based interpretation summaries in HTML reports.",
+    "description": "Modular microbial GWAS with metadata-derived phenotype display labels, optional Bakta annotation, section navigation, and rule-based phenotype-specific interpretation summaries in HTML reports.",
     "gwas_mode": gwas_mode,
     "annotation_engine": annotation_engine,
     "automated_interpretation_disclaimer": "Rule-based report summaries are supportive guidance only and require qualified expert validation.",
