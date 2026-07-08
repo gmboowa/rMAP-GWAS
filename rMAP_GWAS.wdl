@@ -3577,8 +3577,26 @@ def summary_value(path, key, default=""):
 
 
 def read_svg(path):
-    txt = read_text(path, limit=450000)
-    return txt if txt.lstrip().startswith("<svg") else "<p class=\"empty\">Plot not available.</p>"
+    """Read a complete SVG for inline embedding.
+
+    Do not use read_text(..., limit=...) here: large SVG plots such as the
+    100x100 Mash kinship heatmap can exceed 450 KB. If an SVG is truncated,
+    the closing </svg> tag is lost and the browser treats all downstream
+    report sections as part of the broken SVG, making the HTML appear to stop
+    around the population-structure panel.
+    """
+    p = Path(path)
+    if not p.exists() or not p.is_file() or p.stat().st_size == 0:
+        return "<p class=\"empty\">Plot not available.</p>"
+    txt = p.read_text(errors="replace")
+    start = txt.find("<svg")
+    end = txt.rfind("</svg>")
+    if start == -1 or end == -1:
+        return f"<p class=\"empty\">Plot SVG was not valid or was incomplete: {safe_text(p.name)}.</p>"
+    txt = txt[start:end + len("</svg>")]
+    txt = re.sub(r"<\?xml[^>]*\?>", "", txt)
+    txt = re.sub(r"<!DOCTYPE[^>]*>", "", txt)
+    return txt
 
 
 def data_download_href(path, mime="text/plain;charset=utf-8"):
