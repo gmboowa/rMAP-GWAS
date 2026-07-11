@@ -1,0 +1,3 @@
+class	numeric_value	input_group_label	metadata_display_column	metadata_values	n_samples	display_label	display_label_plural
+case	1	case	blaKPC_vs_no_blaKPC	blaKPC positive	50	case (blaKPC positive)	cases (blaKPC positive)
+control	0	control	blaKPC_vs_no_blaKPC	blaKPC negative	50	control (blaKPC negative)	controls (blaKPC negative)

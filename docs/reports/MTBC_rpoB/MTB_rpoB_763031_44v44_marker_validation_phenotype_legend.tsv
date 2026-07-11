@@ -1,0 +1,3 @@
+class	numeric_value	input_group_label	metadata_display_column	metadata_values	n_samples	display_label	display_label_plural
+case	1	case	rpoB_763031_T_C_marker_present_vs_absent	rpoB 763031 T C present	50	case (rpoB 763031 T C present)	cases (rpoB 763031 T C present)
+control	0	control	rpoB_763031_T_C_marker_present_vs_absent	rpoB 763031 T C absent	50	control (rpoB 763031 T C absent)	controls (rpoB 763031 T C absent)
