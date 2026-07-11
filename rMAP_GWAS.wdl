@@ -484,6 +484,7 @@ workflow rMAP_GWAS {
     File snp_qq_plot_svg = snp_qq_plot_for_report
     File snp_plot_summary = snp_plot_summary_for_report
     File html_report = MERGE_RMAP_GWAS_REPORT.html_report
+    File report_sections_tsv = MERGE_RMAP_GWAS_REPORT.report_sections_tsv
     File run_provenance = MERGE_RMAP_GWAS_REPORT.run_provenance_json
   }
 }
@@ -2865,51 +2866,186 @@ tail -n +2 snp_sample_manifest.tsv | while IFS=$'\t' read -r sample r1 r2; do
   fi
 done
 
-snippy-core --ref reference.fasta --prefix core snippy_out/* >> snp_calling.log 2>&1
+# Record exactly how many per-sample Snippy VCFs were produced.
+find snippy_out -mindepth 2 -maxdepth 2 -name snps.vcf | sort > snippy_plain_vcf_list.txt
+find snippy_out -mindepth 2 -maxdepth 2 -name snps.vcf.gz | sort > snippy_vcfgz_list.txt
+n_snippy_vcfs=$(grep -cv '^[[:space:]]*$' snippy_plain_vcf_list.txt || true)
+echo "Per-sample Snippy plain VCFs available: ${n_snippy_vcfs}" | tee -a snp_calling.log >&2
 
-if [ ! -s core.vcf ]; then
-  echo "WARNING: snippy-core did not produce a non-empty core.vcf; creating an empty cohort VCF." >> snp_calling.log
-  {
-    echo '##fileformat=VCFv4.2'
-    printf '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT'
-    tail -n +2 snp_sample_manifest.tsv | cut -f1 | while read -r sample; do
-      printf '\t%s' "$sample"
-    done
-    printf '\n'
-  } > core.vcf
-  : > core.full.aln
+# Run snippy-core for diagnostic/alignment outputs, but do not depend on its core.vcf
+# for the SNP GWAS matrix. For large/clonal MTBC sets, snippy-core can fail even after
+# every single per-sample Snippy run succeeds.
+cohort_vcf_source="per_sample_snippy_vcf_matrix"
+snippy_core_rc=0
+
+echo "Running snippy-core cohort aggregation for diagnostic alignment only..." | tee -a snp_calling.log >&2
+set +e
+snippy-core --ref reference.fasta --prefix core snippy_out/* >> snp_calling.log 2>&1
+snippy_core_rc=$?
+set -e
+echo "snippy-core exit code: ${snippy_core_rc}" | tee -a snp_calling.log >&2
+if [ -s core.vcf ]; then
+  cp core.vcf snippy_core.raw.core.vcf || true
 fi
 
-# Keep only simple biallelic SNPs above the requested QUAL threshold.
-awk -v qthr="~{snp_min_qual}" '
-BEGIN { FS=OFS="\t"; kept=0; total=0; out="rmap_gwas.snps.vcf"; summary="snp_calling_summary.tsv" }
-/^##/ { print > out; next }
-/^#CHROM/ { print > out; next }
-NF == 0 { next }
+# Build a pyseer-ready multi-sample bacterial SNP VCF directly from per-sample Snippy VCFs.
+# This avoids empty SNP reports when snippy-core aggregation fails. Each record is a
+# biallelic SNP marker; samples with the SNP are coded 1/1 and all other samples are
+# coded 0/0, which is the appropriate presence/absence encoding for reference-based
+# bacterial SNP markers produced by per-sample Snippy.
+python <<'PY'
+from __future__ import print_function
+import os, sys, csv, re, math
+
+qthr = float("~{snp_min_qual}")
+manifest = "snp_sample_manifest.tsv"
+records = {}
+samples = []
+sample_to_vcf = {}
+missing_vcfs = []
+parsed_vcfs = 0
+raw_variant_records_seen = 0
+variant_records_passing_basic_filters = 0
+
+with open(manifest, "r") as fh:
+    header = fh.readline()
+    for line in fh:
+        if not line.strip():
+            continue
+        parts = line.rstrip("\n").split("\t")
+        sample = parts[0]
+        samples.append(sample)
+        sample_to_vcf[sample] = os.path.join("snippy_out", sample, "snps.vcf")
+
+def parse_qual(x):
+    try:
+        if x in ("", ".", "NA", "nan", "None"):
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+for sample in samples:
+    vcf_path = sample_to_vcf.get(sample)
+    if not vcf_path or not os.path.exists(vcf_path) or os.path.getsize(vcf_path) == 0:
+        missing_vcfs.append(sample)
+        continue
+    parsed_vcfs += 1
+    with open(vcf_path, "r") as fh:
+        for line in fh:
+            if not line.strip() or line.startswith("#"):
+                continue
+            raw_variant_records_seen += 1
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 5:
+                continue
+            chrom, pos, vid, ref, alt = parts[:5]
+            qual = parts[5] if len(parts) > 5 else "."
+            if len(ref) != 1:
+                continue
+            if "," in alt or len(alt) != 1:
+                continue
+            q = parse_qual(qual)
+            if q is not None and q < qthr:
+                continue
+            try:
+                ipos = int(pos)
+            except Exception:
+                continue
+            variant_records_passing_basic_filters += 1
+            key = (chrom, ipos, ref, alt)
+            if key not in records:
+                records[key] = {"samples": set(), "quals": []}
+            records[key]["samples"].add(sample)
+            if q is not None:
+                records[key]["quals"].append(q)
+
+n_samples = len(samples)
+informative = []
+fixed_alt_sites_skipped = 0
+for key, rec in records.items():
+    alt_count = len(rec["samples"])
+    if alt_count == 0:
+        continue
+    if n_samples > 0 and alt_count >= n_samples:
+        fixed_alt_sites_skipped += 1
+        continue
+    informative.append((key, rec))
+
+def chrom_sort_key(x):
+    chrom, pos, ref, alt = x[0]
+    m = re.search(r"(\d+)$", chrom)
+    chrom_key = (chrom[:m.start()] if m else chrom, int(m.group(1)) if m else 0)
+    return (chrom_key, pos, ref, alt)
+
+informative.sort(key=chrom_sort_key)
+
+def write_vcf(path):
+    with open(path, "w") as out:
+        out.write("##fileformat=VCFv4.2\n")
+        out.write("##source=rMAP_GWAS_per_sample_snippy_vcf_matrix\n")
+        out.write("##INFO=<ID=NS,Number=1,Type=Integer,Description=\"Number of samples\">\n")
+        out.write("##INFO=<ID=AC,Number=1,Type=Integer,Description=\"Alternate allele count encoded from per-sample Snippy VCFs\">\n")
+        out.write("##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n")
+        out.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT")
+        for s in samples:
+            out.write("\t" + s)
+        out.write("\n")
+        for key, rec in informative:
+            chrom, pos, ref, alt = key
+            marker_id = "%s_%s_%s_%s" % (chrom, pos, ref, alt)
+            qs = rec.get("quals", [])
+            qual = ("%.6g" % max(qs)) if qs else "."
+            alt_count = len(rec["samples"])
+            info = "NS=%d;AC=%d" % (n_samples, alt_count)
+            out.write("%s\t%d\t%s\t%s\t%s\t%s\tPASS\t%s\tGT" % (chrom, pos, marker_id, ref, alt, qual, info))
+            alt_samples = rec["samples"]
+            for s in samples:
+                out.write("\t" + ("1/1" if s in alt_samples else "0/0"))
+            out.write("\n")
+
+write_vcf("core.vcf")
+write_vcf("rmap_gwas.snps.vcf")
+
+with open("snp_calling_summary.tsv", "w") as out:
+    out.write("metric\tvalue\n")
+    out.write("snp_calling_tool\tsnippy_per_sample_plus_direct_vcf_matrix\n")
+    out.write("cohort_vcf_source\tper_sample_snippy_vcf_matrix\n")
+    out.write("samples_in_manifest\t%d\n" % n_samples)
+    out.write("per_sample_snippy_vcfs\t%d\n" % parsed_vcfs)
+    out.write("missing_sample_vcfs\t%d\n" % len(missing_vcfs))
+    out.write("raw_per_sample_variant_records_seen\t%d\n" % raw_variant_records_seen)
+    out.write("variant_records_passing_basic_filters\t%d\n" % variant_records_passing_basic_filters)
+    out.write("unique_biallelic_snp_markers_before_fixed_site_filter\t%d\n" % len(records))
+    out.write("fixed_alt_sites_skipped\t%d\n" % fixed_alt_sites_skipped)
+    out.write("raw_core_vcf_records\t%d\n" % len(informative))
+    out.write("snps_after_qual_filter\t%d\n" % len(informative))
+    out.write("qual_threshold\t%s\n" % qthr)
+    if missing_vcfs:
+        out.write("missing_vcf_samples\t%s\n" % ",".join(missing_vcfs))
+
+if len(informative) == 0:
+    sys.stderr.write("WARNING: direct per-sample Snippy VCF matrix contained zero informative biallelic SNP markers after filters.\n")
+else:
+    sys.stderr.write("Direct per-sample Snippy VCF matrix wrote %d informative SNP markers across %d samples.\n" % (len(informative), n_samples))
+PY
+
 {
-  total++
-  ref=$4
-  alt=$5
-  qual=$6
-  if (length(ref) != 1) next
-  if (index(alt, ",") > 0 || length(alt) != 1) next
-  q=qual
-  if (qual == "." || qual == "" || qual == "NA") q=1e99
-  if ((q + 0) < qthr) next
-  $3=$1 "_" $2 "_" $4 "_" $5
-  print > out
-  kept++
-}
-END {
-  print "metric", "value" > summary
-  print "snp_calling_tool", "snippy_snippy-core" >> summary
-  print "raw_core_vcf_records", total >> summary
-  print "snps_after_qual_filter", kept >> summary
-  print "qual_threshold", qthr >> summary
-}' core.vcf
+  echo -e "snippy_core_exit_code\t${snippy_core_rc}"
+  echo -e "cohort_vcf_source\t${cohort_vcf_source}"
+  echo -e "plain_per_sample_snippy_vcfs_found\t${n_snippy_vcfs}"
+} >> snp_calling_summary.tsv
 
 if [ ! -e core.full.aln ]; then
   touch core.full.aln
+fi
+
+# Do not silently return an empty SNP VCF when SNP GWAS is explicitly requested.
+# The report can only show SNP p-values if this VCF has variant records.
+n_final_snps=$(grep -vc '^#' rmap_gwas.snps.vcf || true)
+echo "Final pyseer SNP VCF records: ${n_final_snps}" | tee -a snp_calling.log >&2
+if [ "${n_final_snps}" -eq 0 ]; then
+  echo "WARNING: rmap_gwas.snps.vcf contains zero SNP records; downstream SNP GWAS will have no p-values." | tee -a snp_calling.log >&2
 fi
 
 cat snp_calling_summary.tsv >> snp_calling.log
@@ -2932,6 +3068,7 @@ cat snp_calling.log >&2
     disks: "local-disk ~{disk_gb} HDD"
   }
 }
+
 
 task PYSEER_SNP_GWAS {
   input {
@@ -2973,41 +3110,117 @@ if ! command -v pyseer >/dev/null 2>&1; then
   exit 1
 fi
 
+count_valid_pvalues() {
+  python - "$1" <<'PY'
+from __future__ import print_function
+import sys, re, math
+path = sys.argv[1]
+valid = 0
+rows = 0
+try:
+    with open(path, "r") as fh:
+        first = fh.readline().rstrip("\n")
+        header = re.split(r"\t|\s+", first.strip()) if first else []
+        lower = dict((h.lower(), i) for i, h in enumerate(header))
+        pidx = None
+        for name in ["lrt-pvalue", "lrt_pvalue", "filter-pvalue", "pvalue", "p-value", "p"]:
+            if name.lower() in lower:
+                pidx = lower[name.lower()]
+                break
+        for line in fh:
+            if not line.strip() or line.startswith("#"):
+                continue
+            rows += 1
+            parts = re.split(r"\t|\s+", line.strip())
+            if pidx is not None and pidx < len(parts):
+                try:
+                    v = float(parts[pidx])
+                    if v > 0 and v <= 1 and not math.isnan(v):
+                        valid += 1
+                except Exception:
+                    pass
+except Exception:
+    pass
+print("%d\t%d" % (rows, valid))
+PY
+}
+
+run_pyseer_with_distances() {
+  pyseer --phenotypes ~{phenotype_tsv} --vcf rmap_gwas.snps.vcf \
+    --distances ~{mash_distances} --max-dimensions ~{max_dimensions} \
+    --min-af ~{min_af} --max-af ~{max_af} --cpu ~{threads} \
+    > pyseer_snp_assoc.tsv 2> pyseer_snp.stderr.log
+}
+
+run_pyseer_no_distances() {
+  pyseer --phenotypes ~{phenotype_tsv} --vcf rmap_gwas.snps.vcf --no-distances \
+    --min-af ~{min_af} --max-af ~{max_af} --cpu ~{threads} \
+    > pyseer_snp_assoc.tsv 2> pyseer_snp.no_distances.stderr.log
+}
+
+pyseer_mode="not_run"
+primary_rc="NA"
+fallback_rc="NA"
+assoc_rows=0
+valid_pvalue_rows=0
+
 if [ "$n_snps" -eq 0 ]; then
   echo -e "variant\tlrt-pvalue\tbeta\tnote" > pyseer_snp_assoc.tsv
   echo "No SNPs passed filters; wrote an empty pyseer SNP association table." >> pyseer_snp_run.log
 else
   if [[ "~{force_no_distances}" == "true" ]]; then
-    pyseer --phenotypes ~{phenotype_tsv} --vcf rmap_gwas.snps.vcf --no-distances \
-      --min-af ~{min_af} --max-af ~{max_af} --cpu ~{threads} \
-      > pyseer_snp_assoc.tsv 2> pyseer_snp.stderr.log
-    cat pyseer_snp.stderr.log >&2
-  else
+    pyseer_mode="no_distances_requested"
     set +e
-    pyseer --phenotypes ~{phenotype_tsv} --vcf rmap_gwas.snps.vcf \
-      --distances ~{mash_distances} --max-dimensions ~{max_dimensions} \
-      --min-af ~{min_af} --max-af ~{max_af} --cpu ~{threads} \
-      > pyseer_snp_assoc.tsv 2> pyseer_snp.stderr.log
-    rc=$?
+    run_pyseer_no_distances
+    fallback_rc=$?
     set -e
-    if [[ "$rc" -ne 0 && "~{no_distances_fallback}" == "true" ]]; then
-      echo "Primary SNP pyseer run failed with distances; retrying with --no-distances." >> pyseer_snp_run.log
-      set +e
-      pyseer --phenotypes ~{phenotype_tsv} --vcf rmap_gwas.snps.vcf --no-distances \
-        --min-af ~{min_af} --max-af ~{max_af} --cpu ~{threads} \
-        > pyseer_snp_assoc.tsv 2> pyseer_snp.no_distances.stderr.log
-      rc2=$?
-      set -e
-      cat pyseer_snp.no_distances.stderr.log >&2
-      if [[ "$rc2" -ne 0 ]]; then
-        echo "Fallback SNP pyseer run without distances also failed with exit code ${rc2}." >> pyseer_snp_run.log
-        exit "$rc2"
+    cat pyseer_snp.no_distances.stderr.log >&2 || true
+    if [[ "$fallback_rc" -ne 0 ]]; then
+      echo "SNP pyseer no-distances run failed with exit code ${fallback_rc}." >> pyseer_snp_run.log
+      exit "$fallback_rc"
+    fi
+  else
+    pyseer_mode="distances"
+    set +e
+    run_pyseer_with_distances
+    primary_rc=$?
+    set -e
+    cat pyseer_snp.stderr.log >&2 || true
+
+    if [[ "$primary_rc" -ne 0 ]]; then
+      if [[ "~{no_distances_fallback}" == "true" ]]; then
+        echo "Primary SNP pyseer run failed with distances; retrying with --no-distances." >> pyseer_snp_run.log
+        pyseer_mode="no_distances_fallback_after_failure"
+        set +e
+        run_pyseer_no_distances
+        fallback_rc=$?
+        set -e
+        cat pyseer_snp.no_distances.stderr.log >&2 || true
+        if [[ "$fallback_rc" -ne 0 ]]; then
+          echo "Fallback SNP pyseer run without distances also failed with exit code ${fallback_rc}." >> pyseer_snp_run.log
+          exit "$fallback_rc"
+        fi
+      else
+        exit "$primary_rc"
       fi
-    elif [[ "$rc" -ne 0 ]]; then
-      cat pyseer_snp.stderr.log >&2
-      exit "$rc"
-    else
-      cat pyseer_snp.stderr.log >&2
+    fi
+
+    counts=$(count_valid_pvalues pyseer_snp_assoc.tsv)
+    assoc_rows=$(echo "$counts" | cut -f1)
+    valid_pvalue_rows=$(echo "$counts" | cut -f2)
+
+    if [[ "$primary_rc" -eq 0 && "$valid_pvalue_rows" -eq 0 && "~{no_distances_fallback}" == "true" ]]; then
+      echo "Primary SNP pyseer run completed but returned zero valid p-values; retrying with --no-distances." >> pyseer_snp_run.log
+      pyseer_mode="no_distances_fallback_after_zero_pvalues"
+      set +e
+      run_pyseer_no_distances
+      fallback_rc=$?
+      set -e
+      cat pyseer_snp.no_distances.stderr.log >&2 || true
+      if [[ "$fallback_rc" -ne 0 ]]; then
+        echo "Fallback SNP pyseer run without distances failed with exit code ${fallback_rc}." >> pyseer_snp_run.log
+        exit "$fallback_rc"
+      fi
     fi
   fi
 fi
@@ -3018,12 +3231,24 @@ if [ ! -s pyseer_snp_assoc.tsv ]; then
   exit 1
 fi
 
+counts=$(count_valid_pvalues pyseer_snp_assoc.tsv)
+assoc_rows=$(echo "$counts" | cut -f1)
+valid_pvalue_rows=$(echo "$counts" | cut -f2)
+
 {
   echo -e "metric\tvalue"
   echo -e "snp_gwas_status\trun"
   echo -e "snps_after_qual_filter\t${n_snps}"
-  echo -e "pyseer_rows\t$(($(wc -l < pyseer_snp_assoc.tsv)-1))"
+  echo -e "pyseer_mode\t${pyseer_mode}"
+  echo -e "primary_pyseer_exit_code\t${primary_rc}"
+  echo -e "fallback_pyseer_exit_code\t${fallback_rc}"
+  echo -e "pyseer_rows\t${assoc_rows}"
+  echo -e "pyseer_valid_pvalue_rows\t${valid_pvalue_rows}"
 } > snp_gwas_summary.tsv
+
+if [[ "$n_snps" -gt 0 && "$valid_pvalue_rows" -eq 0 ]]; then
+  echo "WARNING: SNP VCF contained ${n_snps} markers, but pyseer returned zero valid SNP p-values. Check pyseer_snp stderr logs and phenotype/sample-name matching." >> pyseer_snp_run.log
+fi
 
 cat snp_gwas_summary.tsv >> pyseer_snp_run.log
 cat pyseer_snp_run.log >&2
@@ -3042,6 +3267,7 @@ cat pyseer_snp_run.log >&2
     disks: "local-disk ~{disk_gb} HDD"
   }
 }
+
 
 
 task PRIORITIZE_SNP_GWAS_HITS {
@@ -3970,8 +4196,8 @@ def amr_scope_table_html(amr_like):
             )
         ]
     out = [
-        f"<div class="callout"><strong>Configured phenotype:</strong> {safe_text(intro)}</div>",
-        "<div class="table-wrap"><table>",
+        f'<div class="callout"><strong>Configured phenotype:</strong> {safe_text(intro)}</div>',
+        '<div class="table-wrap"><table>',
         f"<thead><tr><th>Interpretation issue</th><th>Current workflow/report behavior</th><th>{safe_text(third_header)}</th></tr></thead><tbody>"
     ]
     for concern, behavior, recommendation in rows:
@@ -3988,6 +4214,58 @@ def brief_summary(text):
     return '<div class="summary"><strong>Brief interpretation:</strong> ' + safe_text(text) + '</div>'
 
 
+def card_start_pattern(section_id):
+    return re.compile(
+        r'<div\b(?=[^>]*\bid="' + re.escape(section_id) + r'")(?=[^>]*\bclass="[^"]*\bcard\b[^"]*")[^>]*>',
+        flags=re.I | re.S
+    )
+
+
+def find_matching_card_close(segment):
+    """Return the start offset of the closing </div> for one complete top-level card segment."""
+    token_re = re.compile(r'<(/?)div\b[^>]*>', flags=re.I | re.S)
+    depth = 0
+    for m in token_re.finditer(segment):
+        if m.group(1):
+            depth -= 1
+            if depth == 0:
+                return m.start()
+        else:
+            depth += 1
+    return -1
+
+
+def decorate_one_card(doc, section_id, summary):
+    """Decorate exactly one card without using broad cross-card regex replacements.
+
+    The previous merge post-processing inserted tools with a document-wide regex like
+    `</div>(?=<div class="card")`. That can hit the wrong nested div when a section
+    contains tables, output grids, or large inline SVGs. This function instead finds the
+    requested card by id, walks nested <div> depth, and inserts the summary/tools inside
+    that one card only. If a card cannot be found, validation below will fail loudly.
+    """
+    m = card_start_pattern(section_id).search(doc)
+    if not m:
+        return doc
+    tail = doc[m.start():]
+    close_rel = find_matching_card_close(tail)
+    if close_rel < 0:
+        raise RuntimeError(f"Report merge failed: card '{section_id}' was opened but no matching closing </div> was found.")
+    segment = tail[:close_rel] + '</div>'
+    rest_start = m.start() + close_rel + len('</div>')
+
+    if summary and 'class="summary"' not in segment:
+        segment = re.sub(r'(<h2\b[^>]*>.*?</h2>)', lambda h: h.group(1) + brief_summary(summary), segment, count=1, flags=re.S | re.I)
+
+    if 'class="section-tools"' not in segment:
+        close_rel2 = find_matching_card_close(segment)
+        if close_rel2 < 0:
+            raise RuntimeError(f"Report merge failed after decorating card '{section_id}'.")
+        segment = segment[:close_rel2] + section_tools() + segment[close_rel2:]
+
+    return doc[:m.start()] + segment + doc[rest_start:]
+
+
 def add_section_summaries_and_navigation(doc, summaries):
     doc = doc.replace('<body>', '<body id="top">', 1)
     doc = doc.replace('<section class="hero">', '<section class="hero" id="home">', 1)
@@ -3996,13 +4274,35 @@ def add_section_summaries_and_navigation(doc, summaries):
     doc = doc.replace('<div class="card half"><h2><span>04</span> Top-hit GenBank annotation rescue</h2>', '<div class="card half" id="top-hit"><h2><span>04</span> Top-hit GenBank annotation rescue</h2>', 1)
     doc = doc.replace('<div class="title">Prokka + Panaroo</div><p>Creates GFF annotations and pangenome gene matrices.</p>', '<div class="title">' + safe_text(annotation_engine) + ' + Panaroo</div><p>Creates GFF annotations and pangenome gene matrices. Prokka remains the default; Bakta can be enabled with <code>use_bakta=true</code>.</p>', 1)
     doc = doc.replace('container backend recorded as ' + safe_text(container_backend) + '.</div>', 'annotation engine: ' + safe_text(annotation_engine) + '; container backend recorded as ' + safe_text(container_backend) + '.</div>', 1)
-    doc = doc.replace('</nav><div class="callout"><strong>Sample-size interpretation note:', '</nav><div class="callout disclaimer"><strong>Automated interpretation disclaimer:</strong> The brief summaries in this report are rule-based supportive guidance for navigation and structured review only. Final biological, clinical, or public-health interpretation should be validated by a qualified expert.</div><div class="callout"><strong>Sample-size interpretation note:', 1)
+    doc = doc.replace('</nav><div class="callout"><strong>GWAS phenotype being tested:', '</nav><div class="callout disclaimer"><strong>Automated interpretation disclaimer:</strong> The brief summaries in this report are rule-based supportive guidance for navigation and structured review only. Final biological, clinical, or public-health interpretation should be validated by a qualified expert.</div><div class="callout"><strong>GWAS phenotype being tested:', 1)
+
     for section_id, summary in summaries.items():
-        pattern = r'(<div class="card(?: [^"]*)?" id="' + re.escape(section_id) + r'"><h2.*?</h2>)'
-        doc = re.sub(pattern, lambda m: m.group(1) + brief_summary(summary), doc, count=1, flags=re.S)
-    doc = re.sub(r'(</div>)(?=\s*<div class="card)', lambda m: section_tools() + m.group(1), doc)
-    doc = re.sub(r'(</div>)(?=\s*</section>)', lambda m: section_tools() + m.group(1), doc, count=1)
+        doc = decorate_one_card(doc, section_id, summary)
     return doc
+
+
+def validate_report_sections(doc, required_sections):
+    missing = []
+    positions = []
+    for section_id in required_sections:
+        m = card_start_pattern(section_id).search(doc)
+        if not m:
+            missing.append(section_id)
+        else:
+            positions.append((section_id, m.start()))
+    if missing:
+        raise RuntimeError("Report merge failed: missing HTML card section(s): " + ", ".join(missing))
+    out_of_order = []
+    for (prev_id, prev_pos), (cur_id, cur_pos) in zip(positions, positions[1:]):
+        if cur_pos <= prev_pos:
+            out_of_order.append(prev_id + " before " + cur_id)
+    if out_of_order:
+        raise RuntimeError("Report merge failed: section order check failed: " + "; ".join(out_of_order))
+    unclosed_svgs = doc.lower().count('<svg') != doc.lower().count('</svg>')
+    if unclosed_svgs:
+        raise RuntimeError("Report merge failed: SVG open/close counts do not match; refusing to emit a truncated report.")
+    return positions
+
 
 phenotype_rows = read_tsv("~{phenotype_tsv}")
 phenotype_tested = phenotype_rows[0][1] if phenotype_rows and len(phenotype_rows[0]) > 1 else "case_control"
@@ -4172,11 +4472,20 @@ section_summaries = {
     "interpretation": "These notes summarize major microbial GWAS caveats, including population structure, recombination, small sample size, and phenotype misclassification.",
     "outputs": "This section records the key files needed for review, reruns, sharing, and downstream manuscript or supplementary reporting."
 }
+required_report_sections = [
+    "phenotype", "amr-scope", "pipeline", "run-config", "top-hit", "structure", "plots",
+    "snp", "gubbins", "hits", "allhits", "annotation", "validation", "panaroo", "interpretation", "outputs"
+]
 html_doc = add_section_summaries_and_navigation(html_doc, section_summaries)
+section_positions = validate_report_sections(html_doc, required_report_sections)
+section_manifest_lines = ["section_id\torder\tbyte_offset"]
+for idx, (section_id, byte_offset) in enumerate(section_positions, start=1):
+    section_manifest_lines.append(f"{section_id}\t{idx}\t{byte_offset}")
+Path(prefix + "_report_sections.tsv").write_text("\n".join(section_manifest_lines) + "\n")
 Path(prefix + "_report.html").write_text(html_doc)
 provenance = {
     "workflow": "rMAP-GWAS",
-    "workflow_version": "0.4.1-snp-report-layout-patch",
+    "workflow_version": "0.4.3-section-merge-guard",
     "description": "Modular microbial GWAS with metadata-derived phenotype display labels, optional Bakta annotation, section navigation, and rule-based phenotype-specific interpretation summaries in HTML reports.",
     "gwas_mode": gwas_mode,
     "annotation_engine": annotation_engine,
@@ -4210,6 +4519,7 @@ PY
 
   output {
     File html_report = "~{output_prefix}_report.html"
+    File report_sections_tsv = "~{output_prefix}_report_sections.tsv"
     File run_provenance_json = "~{output_prefix}_run_provenance.json"
   }
 
