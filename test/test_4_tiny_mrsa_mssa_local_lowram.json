@@ -1,0 +1,66 @@
+{
+  "rMAP_GWAS.sample_names": [
+    "ERR11728856",
+    "ERR11728866",
+    "ERR11728974",
+    "ERR11728986"
+  ],
+  "rMAP_GWAS.read1s": [
+    "/Users/gmboowa/Desktop/MRSAvsMSSA/tiny4_fastqs/ERR11728856_1.fastq.gz",
+    "/Users/gmboowa/Desktop/MRSAvsMSSA/tiny4_fastqs/ERR11728866_1.fastq.gz",
+    "/Users/gmboowa/Desktop/MRSAvsMSSA/tiny4_fastqs/ERR11728974_1.fastq.gz",
+    "/Users/gmboowa/Desktop/MRSAvsMSSA/tiny4_fastqs/ERR11728986_1.fastq.gz"
+  ],
+  "rMAP_GWAS.read2s": [
+    "/Users/gmboowa/Desktop/MRSAvsMSSA/tiny4_fastqs/ERR11728856_2.fastq.gz",
+    "/Users/gmboowa/Desktop/MRSAvsMSSA/tiny4_fastqs/ERR11728866_2.fastq.gz",
+    "/Users/gmboowa/Desktop/MRSAvsMSSA/tiny4_fastqs/ERR11728974_2.fastq.gz",
+    "/Users/gmboowa/Desktop/MRSAvsMSSA/tiny4_fastqs/ERR11728986_2.fastq.gz"
+  ],
+  "rMAP_GWAS.groups": [
+    "control",
+    "control",
+    "case",
+    "case"
+  ],
+  "rMAP_GWAS.phenotype_name": "MSSA_vs_MRSA",
+  "rMAP_GWAS.phenotype_display_values": [
+    "MSSA",
+    "MSSA",
+    "MRSA",
+    "MRSA"
+  ],
+  "rMAP_GWAS.output_prefix": "rMAP_GWAS_MRSA_MSSA_4_tiny_lowram_local",
+  "rMAP_GWAS.gwas_mode": "gene_presence_absence",
+  "rMAP_GWAS.do_snp_gwas": true,
+  "rMAP_GWAS.do_gubbins": false,
+  "rMAP_GWAS.use_bakta": false,
+  "rMAP_GWAS.reference_docker": "gmboowa/rmap-gwas-saureus-refs:2026.06",
+  "rMAP_GWAS.reference_species": "Staphylococcus aureus",
+  "rMAP_GWAS.reference_name": "SAUREUS_2026_06",
+  "rMAP_GWAS.min_af": 0.1,
+  "rMAP_GWAS.max_af": 0.9,
+  "rMAP_GWAS.pyseer_max_dimensions": 1,
+  "rMAP_GWAS.pyseer_force_no_distances": true,
+  "rMAP_GWAS.pyseer_no_distances_fallback": true,
+  "rMAP_GWAS.container_backend": "docker",
+  "rMAP_GWAS.fastp_threads": 1,
+  "rMAP_GWAS.assembly_threads": 1,
+  "rMAP_GWAS.annotation_threads": 1,
+  "rMAP_GWAS.pangenome_threads": 1,
+  "rMAP_GWAS.gwas_threads": 1,
+  "rMAP_GWAS.fastp_memory_gb": 2,
+  "rMAP_GWAS.assembly_memory_gb": 4,
+  "rMAP_GWAS.annotation_memory_gb": 4,
+  "rMAP_GWAS.pangenome_memory_gb": 6,
+  "rMAP_GWAS.gwas_memory_gb": 4,
+  "rMAP_GWAS.fastp_disk_gb": 50,
+  "rMAP_GWAS.assembly_disk_gb": 150,
+  "rMAP_GWAS.annotation_disk_gb": 100,
+  "rMAP_GWAS.pangenome_disk_gb": 200,
+  "rMAP_GWAS.gwas_disk_gb": 200,
+  "rMAP_GWAS.snp_disk_gb": 200,
+  "rMAP_GWAS.pyseer_docker": "gmboowa/rmap-gwas-pyseer-annotate:0.3",
+  "rMAP_GWAS.python_docker": "gmboowa/rmap-gwas-pyseer-annotate:0.3",
+  "rMAP_GWAS.hit_annotation_docker": "gmboowa/rmap-gwas-pyseer-annotate:0.3"
+}

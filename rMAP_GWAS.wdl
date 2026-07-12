@@ -92,17 +92,17 @@ workflow rMAP_GWAS {
     String panaroo_docker = "quay.io/biocontainers/panaroo:1.5.2--pyhdfd78af_0"
     # Combined linux/amd64 image for local Colima testing and Cromwell execution.
     # Contains pyseer, mash, Python, pandas, numpy, scipy, statsmodels, scikit-learn and tqdm.
-    String mash_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.2"
-    String pyseer_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.2"
+    String mash_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.3"
+    String pyseer_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.3"
     # Dedicated reference-based SNP-calling image. This keeps mapping/SNP calling
     # separate from the pyseer/statistics image and avoids missing bwa/samtools/bcftools errors.
     String snp_calling_docker = "staphb/snippy:4.6.0"
     # Optional recombination module. Used only when do_gubbins=true.
     String gubbins_docker = "staphb/gubbins:latest"
-    String python_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.2"
+    String python_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.3"
     # Docker image used for post-GWAS reference annotation and plot generation.
     # Keep this Python-capable; the task uses pure Python and does not require BLAST.
-    String hit_annotation_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.2"
+    String hit_annotation_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.3"
     Int plot_max_points = 5000
 
     # Reference/provenance settings. This records the species-specific reference package used or intended for the run.

@@ -636,7 +636,7 @@ For full microbial GWAS cohorts, Panaroo, Mash, pyseer, SNP calling & Gubbins ar
 | Prokka | `staphb/prokka:1.14.6` |
 | Bakta | `gmboowa/rmap-gwas-bakta-db:light-0.1` |
 | Panaroo | `quay.io/biocontainers/panaroo:1.5.2--pyhdfd78af_0` |
-| Mash / pyseer / Python utilities | `gmboowa/rmap-gwas-pyseer-annotate:0.2` |
+| Mash / pyseer / Python utilities | `gmboowa/rmap-gwas-pyseer-annotate:0.3` |
 | Snippy | `staphb/snippy:4.6.0` |
 | Gubbins | `staphb/gubbins:latest` |
 | Reference package | `gmboowa/rmap-gwas-mtbc-refs:2026.06` |
@@ -644,6 +644,37 @@ For full microbial GWAS cohorts, Panaroo, Mash, pyseer, SNP calling & Gubbins ar
 ---
 
 ## Running locally with Cromwell
+
+A small local test dataset is provided in `test/`. It is designed as a **workflow test run**, not as a powered biological GWAS analysis.
+
+The test includes:
+
+- 4 downsampled paired-end *Staphylococcus aureus* FASTQ samples.
+- 2 MSSA control samples.
+- 2 MRSA case samples.
+- A low-resource local Cromwell input JSON.
+- A local Cromwell configuration file.
+- Gene presence/absence GWAS enabled.
+- SNP-GWAS enabled with `do_snp_gwas=true`.
+- Gubbins disabled with `do_gubbins=false` to keep the laptop test lightweight.
+- The multi-architecture pyseer/Python utilities image `gmboowa/rmap-gwas-pyseer-annotate:0.3`.
+
+Expected folder layout:
+
+```text
+test/
+├── README.md
+├── cromwell_local_1job.conf
+├── test_4_tiny_mrsa_mssa_local_lowram.json
+└── fastqs/
+    ├── ERR11728856_1.fastq.gz
+    ├── ERR11728856_2.fastq.gz
+    ├── ERR11728866_1.fastq.gz
+    ├── ERR11728866_2.fastq.gz
+    ├── ERR11728974_1.fastq.gz
+    ├── ERR11728974_2.fastq.gz
+    ├── ERR11728986_1.fastq.gz
+    └── ERR11728986_2.fastq.gz
 
 Validate the WDL if you have `womtool` available:
 
@@ -654,7 +685,8 @@ java -jar womtool.jar validate rMAP_GWAS.wdl
 Run with Cromwell:
 
 ```bash
-java -jar cromwell.jar run rMAP_GWAS.wdl -i inputs.json
+
+java -Dconfig.file=test/cromwell_local_1job.conf -jar /path/to/cromwell-91.jar run rMAP_GWAS.wdl -i test/test_4_tiny_mrsa_mssa_local_lowram.json 
 ```
 
 For local Cromwell runs, make sure Docker is running & that your input FASTQ paths are accessible to the execution environment.
