@@ -190,7 +190,7 @@
       font-size: 12px;
       font-weight: 950;
       letter-spacing: .18em;
-      text-transform: uppercase;
+      text-transform: none;
     }
 
     .kicker::before {
@@ -229,7 +229,7 @@
 
     .stat-strip {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0,1fr));
+      grid-template-columns: repeat(3, minmax(0,1fr));
       gap: 12px;
       margin-top: 22px;
     }
@@ -356,6 +356,12 @@
       font-weight: 950;
       letter-spacing: .12em;
       text-transform: uppercase;
+    }
+
+    .report-card sub, .chip sub {
+      font-size: .72em;
+      line-height: 0;
+      vertical-align: sub;
     }
 
     .pill, .chip {
@@ -589,7 +595,7 @@
             <div class="stat-strip" aria-label="Workflow highlights">
               <div class="stat"><small>Association modes</small><strong>Gene + SNP</strong></div>
               <div class="stat"><small>Structure correction</small><strong>Mash + pyseer</strong></div>
-              <div class="stat"><small>New branch</small><strong>Gubbins-ready</strong></div>
+              <div class="stat"><small>Recombination</small><strong>Optional Gubbins</strong></div>
             </div>
           </div>
 
@@ -606,7 +612,10 @@
           <div class="chips" aria-label="Report filters">
             <span class="chip hot">MTBC</span>
             <span class="chip hot">MRSA/MSSA</span>
+            <span class="chip hot">CRAB/CSAB</span>
+            <span class="chip hot"><em>bla</em><sub>OXA-23</sub></span>
             <span class="chip hot">VRE/VSE</span>
+            <span class="chip hot"><em>bla</em><sub>KPC</sub></span>
             <span class="chip hot"><em>rpoB</em> SNP</span>
             <span class="chip">Gene GWAS</span>
             <span class="chip">SNP GWAS</span>
@@ -619,11 +628,11 @@
 
             <a class="report-card" href="./reports/MTBC_rpoB/report.html">
               <div class="report-top">
-                <span class="country">MTBC <em>rpoB</em></span>
+                <span class="country"><em>Mycobacterium tuberculosis</em> complex dataset</span>
                 <span class="pill">docs/reports/MTBC_rpoB</span>
               </div>
 
-              <h3><em>rpoB</em> 763031 SNP</h3>
+              <h3><em>rpoB</em> marker-positive versus marker-negative</h3>
 
               <p>
                 Positive-control MTBC SNP-GWAS report contrasting <em>rpoB</em> 763031 T→C
@@ -632,9 +641,9 @@
               </p>
 
               <div class="metrics-grid">
-                <div class="mini-metric"><small>Cases</small><strong>50 present</strong></div>
-                <div class="mini-metric"><small>Controls</small><strong>50 absent</strong></div>
-                <div class="mini-metric"><small>Target</small><strong><em>rpoB</em> SNP</strong></div>
+                <div class="mini-metric"><small>Cases</small><strong>50 marker-positive</strong></div>
+                <div class="mini-metric"><small>Controls</small><strong>50 marker-negative</strong></div>
+                <div class="mini-metric"><small>Total</small><strong>100 samples</strong></div>
               </div>
 
               <div class="chips">
@@ -644,39 +653,39 @@
               </div>
 
               <div class="open-row">
-                <span>Launch <em>rpoB</em> report</span>
+                <span>Open interactive report</span>
                 <span class="arrow">→</span>
               </div>
             </a>
 
             <a class="report-card" href="./reports/blaKPC/report.html">
               <div class="report-top">
-                <span class="country"><em>Klebsiella pneumoniae</em></span>
+                <span class="country"><em>Klebsiella pneumoniae</em> dataset</span>
                 <span class="pill">docs/reports/blaKPC</span>
               </div>
 
-              <h3><em>blaKPC</em> versus non-<em>blaKPC</em></h3>
+              <h3><em>bla</em><sub>KPC</sub>-positive versus <em>bla</em><sub>KPC</sub>-negative</h3>
 
               <p>
                 Positive-control <em>K. pneumoniae</em> AMR GWAS report contrasting
-                <em>blaKPC</em>-positive and <em>blaKPC</em>-negative isolates, with the
+                <em>bla</em><sub>KPC</sub>-positive and <em>bla</em><sub>KPC</sub>-negative isolates, with the
                 expected <em>blaKPC</em> gene signal recovered, SNP GWAS enabled, and Gubbins recombination assessment run.
               </p>
 
               <div class="metrics-grid">
-                <div class="mini-metric"><small>Cases</small><strong>50 <em>blaKPC</em>+</strong></div>
-                <div class="mini-metric"><small>Controls</small><strong>50 <em>blaKPC</em>−</strong></div>
+                <div class="mini-metric"><small>Cases</small><strong>50 <em>bla</em><sub>KPC</sub>+</strong></div>
+                <div class="mini-metric"><small>Controls</small><strong>50 <em>bla</em><sub>KPC</sub>−</strong></div>
                 <div class="mini-metric"><small>Total</small><strong>100 samples</strong></div>
               </div>
 
               <div class="chips">
-                <span class="chip hot"><em>blaKPC</em> hit</span>
+                <span class="chip hot"><em>bla</em><sub>KPC</sub> signal</span>
                 <span class="chip"><em>K. pneumoniae</em></span>
                 <span class="chip">Gubbins run</span>
               </div>
 
               <div class="open-row">
-                <span>Launch <em>blaKPC</em> report</span>
+                <span>Open interactive report</span>
                 <span class="arrow">→</span>
               </div>
             </a>
@@ -698,7 +707,36 @@
                 <span class="chip"><em>S. aureus</em></span>
                 <span class="chip">pyseer</span>
               </div>
-              <div class="open-row"><span>Launch <em>S. aureus</em> report</span><span class="arrow">→</span></div>
+              <div class="open-row"><span>Open interactive report</span><span class="arrow">→</span></div>
+            </a>
+
+
+            <a class="report-card" href="./reports/Acinetobacter_baumannii_CRAB_OXA23/report.html">
+              <div class="report-top">
+                <span class="country"><em>Acinetobacter baumannii</em> dataset</span>
+                <span class="pill">docs/reports/Acinetobacter_baumannii_CRAB_OXA23</span>
+              </div>
+              <h3>CRAB versus CSAB</h3>
+              <p>
+                Positive-control <em>A. baumannii</em> AMR GWAS report contrasting
+                carbapenem-resistant, OXA-23-positive isolates with carbapenem-susceptible,
+                OXA-23-negative isolates, with gene presence/absence association testing,
+                population-structure assessment, and prioritized marker review.
+              </p>
+              <div class="metrics-grid">
+                <div class="mini-metric"><small>Cases</small><strong>50 CRAB</strong></div>
+                <div class="mini-metric"><small>Controls</small><strong>50 CSAB</strong></div>
+                <div class="mini-metric"><small>Total</small><strong>100 samples</strong></div>
+              </div>
+              <div class="chips">
+                <span class="chip hot"><em>bla</em><sub>OXA-23</sub> signal</span>
+                <span class="chip"><em>A. baumannii</em></span>
+                <span class="chip">Gene GWAS</span>
+              </div>
+              <div class="open-row">
+                <span>Open interactive report</span>
+                <span class="arrow">→</span>
+              </div>
             </a>
 
             <a class="report-card" href="./reports/Enterococcus_faecium/report.html">
@@ -718,7 +756,7 @@
                 <span class="chip"><em>E. faecium</em></span>
                 <span class="chip">group_574 hit</span>
               </div>
-              <div class="open-row"><span>Launch <em>E. faecium</em> report</span><span class="arrow">→</span></div>
+              <div class="open-row"><span>Open interactive report</span><span class="arrow">→</span></div>
             </a>
 
             <a class="report-card" href="./reports/test/report.html">
@@ -753,7 +791,7 @@
         <div class="section-header">
           <div>
             <h2 id="workflow-title">Workflow architecture</h2>
-            <p>The landing page follows the same five-column architecture shown in the attachment: study design and QC, assembly and annotation, pangenome/population structure, association testing, and interactive reporting.</p>
+            <p>The workflow follows a five-stage architecture covering study design and QC, assembly and annotation, pangenome/population structure, association testing, and interactive reporting.</p>
           </div>
         </div>
         <div class="section-body">
@@ -811,7 +849,7 @@
         <div class="section-header">
           <div>
             <h2 id="gubbins-title">Gubbins recombination module</h2>
-            <p>The landing page now explicitly reflects the updated workflow with a Gubbins branch for recombination-aware SNP interpretation.</p>
+            <p>The workflow includes an optional Gubbins branch for recombination-aware SNP interpretation.</p>
           </div>
         </div>
         <div class="section-body">

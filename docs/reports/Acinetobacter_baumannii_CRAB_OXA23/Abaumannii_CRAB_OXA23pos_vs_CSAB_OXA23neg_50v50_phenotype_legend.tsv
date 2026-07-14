@@ -1,0 +1,3 @@
+class	numeric_value	input_group_label	metadata_display_column	metadata_values	n_samples	display_label	display_label_plural
+case	1	case	CRAB_OXA23_vs_CSAB_OXA23	CRAB OXA23 positive	50	case (CRAB OXA23 positive)	cases (CRAB OXA23 positive)
+control	0	control	CRAB_OXA23_vs_CSAB_OXA23	CSAB OXA23 negative	50	control (CSAB OXA23 negative)	controls (CSAB OXA23 negative)
