@@ -639,7 +639,7 @@ For full microbial GWAS cohorts, Panaroo, Mash, pyseer, SNP calling & Gubbins ar
 | Mash / pyseer / Python utilities | `gmboowa/rmap-gwas-pyseer-annotate:0.3` |
 | Snippy | `staphb/snippy:4.6.0` |
 | Gubbins | `staphb/gubbins:latest` |
-| Reference package | `gmboowa/rmap-gwas-mtbc-refs:2026.06` |
+
 
 ---
 
