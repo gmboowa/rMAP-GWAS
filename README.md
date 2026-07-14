@@ -111,7 +111,7 @@ All selected samples routed together
         |-- No case/control separation for read processing
         |-- No species-exclusion branch at this stage
         |-- All samples proceed through the same QC, assembly, annotation,
-        |   pangenome &  distance-matrix workflow
+        |   pangenome and distance-matrix workflow
         |
         `-- Case/control labels are retained for phenotype coding,
             enrichment summaries, plots & GWAS interpretation.
@@ -414,7 +414,6 @@ Integrated reporting & provenance
         |       <output_prefix>_SNP_gubbins.log
 ```
 
-
 ## Input model
 
 The workflow uses a **single sample-set design**, not separate case/control arrays.
@@ -610,7 +609,7 @@ The same rMAP-GWAS WDL can therefore be used across bacterial species by changin
 
 ## Runtime controls
 
-The WDL exposes task-level CPU, memory & disk settings. Defaults are test friendly & may need to be increased for larger cohorts.
+The WDL exposes task-level CPU, memory & disk settings. Defaults are test-friendly and may need to be increased for larger cohorts.
 
 | Resource group | Default threads | Default memory | Default disk |
 |---|---:|---:|---:|
@@ -640,7 +639,6 @@ For full microbial GWAS cohorts, Panaroo, Mash, pyseer, SNP calling & Gubbins ar
 | Snippy | `staphb/snippy:4.6.0` |
 | Gubbins | `staphb/gubbins:latest` |
 
-
 ---
 
 ## Running locally with Cromwell
@@ -655,7 +653,7 @@ The test includes:
 - A low-resource local Cromwell input JSON.
 - A local Cromwell configuration file.
 - Gene presence/absence GWAS enabled.
-- SNP-GWAS enabled with `do_snp_gwas=true`.
+- SNP GWAS enabled with `do_snp_gwas=true`.
 - Gubbins disabled with `do_gubbins=false` to keep the laptop test lightweight.
 - The multi-architecture pyseer/Python utilities image `gmboowa/rmap-gwas-pyseer-annotate:0.3`.
 
@@ -675,6 +673,7 @@ test/
     ├── ERR11728974_2.fastq.gz
     ├── ERR11728986_1.fastq.gz
     └── ERR11728986_2.fastq.gz
+```
 
 Validate the WDL if you have `womtool` available:
 
@@ -685,8 +684,7 @@ java -jar womtool.jar validate rMAP_GWAS.wdl
 Run with Cromwell:
 
 ```bash
-
-java -Dconfig.file=test/cromwell_local_1job.conf -jar /path/to/cromwell-91.jar run rMAP_GWAS.wdl -i test/test_4_tiny_mrsa_mssa_local_lowram.json 
+java -Dconfig.file=test/cromwell_local_1job.conf -jar /path/to/cromwell-91.jar run rMAP_GWAS.wdl -i test/test_4_tiny_mrsa_mssa_local_lowram.json
 ```
 
 For local Cromwell runs, make sure Docker is running & that your input FASTQ paths are accessible to the execution environment.
@@ -713,7 +711,7 @@ This test run includes:
 Place the workflow in the rMAP-GWAS repository:
 
 ```text
-~/rMAP_GWAS.wdl
+~/rMAP-GWAS/rMAP_GWAS.wdl
 ```
 
 Prepare the local test directory as follows:
@@ -764,13 +762,13 @@ colima status
 Confirm that the eight paired-end FASTQ files are present:
 
 ```bash
-ls -lh ~/tiny4_fastqs/*.fastq.gz
+ls -lh ~/MRSAvsMSSA/tiny4_fastqs/*.fastq.gz
 ```
 
 Check the integrity of the compressed FASTQ files:
 
 ```bash
-gzip -t ~/tiny4_fastqs/*.fastq.gz
+gzip -t ~/MRSAvsMSSA/tiny4_fastqs/*.fastq.gz
 ```
 
 Successful `gzip -t` validation normally produces no output.
@@ -778,13 +776,13 @@ Successful `gzip -t` validation normally produces no output.
 Validate the JSON syntax:
 
 ```bash
-python3 -m json.tool ~/test_4_tiny_mrsa_mssa_local_lowram.json >/dev/null
+python3 -m json.tool ~/MRSAvsMSSA/test_4_tiny_mrsa_mssa_local_lowram.json >/dev/null
 ```
 
 Validate the WDL with Cromwell:
 
 ```bash
-java -jar ~/cromwell-91.jar validate ~/rMAP_GWAS.wdl
+java -jar ~/cromwell-91.jar validate ~/rMAP-GWAS/rMAP_GWAS.wdl
 ```
 
 ### 3. Create a clean execution directory
@@ -792,9 +790,9 @@ java -jar ~/cromwell-91.jar validate ~/rMAP_GWAS.wdl
 Running Cromwell from a dedicated directory keeps the workflow database, logs, and execution files together:
 
 ```bash
-mkdir -p ~/local_cromwell_run
+mkdir -p ~/MRSAvsMSSA/local_cromwell_run
 
-cd ~/local_cromwell_run
+cd ~/MRSAvsMSSA/local_cromwell_run
 ```
 
 ### 4. Run rMAP-GWAS locally
@@ -803,20 +801,20 @@ Run the workflow with the low-memory, single-job Cromwell configuration:
 
 ```bash
 java \
-  -Dconfig.file=~/cromwell_local_1job.conf \
+  -Dconfig.file=~/MRSAvsMSSA/cromwell_local_1job.conf \
   -jar ~/cromwell-91.jar \
   run ~/rMAP-GWAS/rMAP_GWAS.wdl \
-  --inputs ~/test_4_tiny_mrsa_mssa_local_lowram.json
+  --inputs ~/MRSAvsMSSA/test_4_tiny_mrsa_mssa_local_lowram.json
 ```
 
 To save the terminal output to a log file while displaying it on the screen, use:
 
 ```bash
 java \
-  -Dconfig.file=~/cromwell_local_1job.conf \
+  -Dconfig.file=~/MRSAvsMSSA/cromwell_local_1job.conf \
   -jar ~/cromwell-91.jar \
-  run ~/rMAP_GWAS.wdl \
-  --inputs ~/test_4_tiny_mrsa_mssa_local_lowram.json \
+  run ~/rMAP-GWAS/rMAP_GWAS.wdl \
+  --inputs ~/MRSAvsMSSA/test_4_tiny_mrsa_mssa_local_lowram.json \
   2>&1 | tee rMAP_GWAS_local_test.log
 ```
 
@@ -1015,7 +1013,7 @@ Only the first four fields are required by the WDL. Additional metadata should b
 
 Check that:
 
-- `sample_names`, `read1s`, `read2s` &  `groups` have the same length.
+- `sample_names`, `read1s`, `read2s`, and `groups` have the same length.
 - Sample names are unique.
 - Sample names do not contain whitespace.
 - `groups` contains recognizable binary labels.
@@ -1068,9 +1066,8 @@ rMAP-GWAS/
 
 If you use rMAP-GWAS, cite this repository & the underlying tools used in the workflow, including fastp, Shovill, QUAST, Prokka or Bakta, Panaroo, Mash, pyseer, Snippy & Gubbins where applicable.
 
-
 ---
 
 ## License
 
-MIT license 
+MIT license
