@@ -485,7 +485,7 @@ Example: if `groups` is `case/control` but `phenotype_display_values` is `blood/
 }
 ```
 
-### Terra sample-set mapping
+### Sample-set mapping
 
 When running on a Terra Cloud platform sample set, map the workflow inputs to the entity-set member attributes. For example, if the entity set is `gwasmtb_set` & the member entity type is `gwasmtb`:
 
@@ -690,6 +690,213 @@ java -Dconfig.file=test/cromwell_local_1job.conf -jar /path/to/cromwell-91.jar r
 ```
 
 For local Cromwell runs, make sure Docker is running & that your input FASTQ paths are accessible to the execution environment.
+
+---
+## Local test run with Cromwell 91
+
+A small four-sample MRSA-versus-MSSA dataset is provided for testing the complete rMAP-GWAS workflow on a local computer using Docker and Cromwell 91.
+
+This test run includes:
+
+- Two MSSA samples coded as `control`
+- Two MRSA samples coded as `case`
+- Gene presence/absence GWAS
+- Reference-based SNP GWAS
+- Prokka annotation
+- Gubbins disabled
+- One Cromwell task running at a time to reduce local memory usage
+
+> **Important:** This four-sample dataset is intended to verify that the workflow executes successfully. It is too small for reliable biological or statistical interpretation.
+
+### Required files
+
+Place the workflow in the rMAP-GWAS repository:
+
+```text
+~/rMAP_GWAS.wdl
+```
+
+Prepare the local test directory as follows:
+
+```text
+~/MRSAvsMSSA/
+├── cromwell_local_1job.conf
+├── test_4_tiny_mrsa_mssa_local_lowram.json
+└── tiny4_fastqs/
+    ├── ERR11728856_1.fastq.gz
+    ├── ERR11728856_2.fastq.gz
+    ├── ERR11728866_1.fastq.gz
+    ├── ERR11728866_2.fastq.gz
+    ├── ERR11728974_1.fastq.gz
+    ├── ERR11728974_2.fastq.gz
+    ├── ERR11728986_1.fastq.gz
+    └── ERR11728986_2.fastq.gz
+```
+
+The Cromwell executable should be located at:
+
+```text
+~/cromwell-91.jar
+```
+
+### 1. Start Docker
+
+rMAP-GWAS executes its software through Docker containers. On macOS with Colima, start Docker with:
+
+```bash
+colima start --cpu 6 --memory 10 --disk 100
+```
+
+Confirm that Docker is running:
+
+```bash
+docker info
+```
+
+If Colima is already running, check its status with:
+
+```bash
+colima status
+```
+
+### 2. Validate the input files
+
+Confirm that the eight paired-end FASTQ files are present:
+
+```bash
+ls -lh ~/tiny4_fastqs/*.fastq.gz
+```
+
+Check the integrity of the compressed FASTQ files:
+
+```bash
+gzip -t ~/tiny4_fastqs/*.fastq.gz
+```
+
+Successful `gzip -t` validation normally produces no output.
+
+Validate the JSON syntax:
+
+```bash
+python3 -m json.tool ~/test_4_tiny_mrsa_mssa_local_lowram.json >/dev/null
+```
+
+Validate the WDL with Cromwell:
+
+```bash
+java -jar ~/cromwell-91.jar validate ~/rMAP_GWAS.wdl
+```
+
+### 3. Create a clean execution directory
+
+Running Cromwell from a dedicated directory keeps the workflow database, logs, and execution files together:
+
+```bash
+mkdir -p ~/local_cromwell_run
+
+cd ~/local_cromwell_run
+```
+
+### 4. Run rMAP-GWAS locally
+
+Run the workflow with the low-memory, single-job Cromwell configuration:
+
+```bash
+java \
+  -Dconfig.file=~/cromwell_local_1job.conf \
+  -jar ~/cromwell-91.jar \
+  run ~/rMAP-GWAS/rMAP_GWAS.wdl \
+  --inputs ~/test_4_tiny_mrsa_mssa_local_lowram.json
+```
+
+To save the terminal output to a log file while displaying it on the screen, use:
+
+```bash
+java \
+  -Dconfig.file=~/cromwell_local_1job.conf \
+  -jar ~/cromwell-91.jar \
+  run ~/rMAP_GWAS.wdl \
+  --inputs ~/test_4_tiny_mrsa_mssa_local_lowram.json \
+  2>&1 | tee rMAP_GWAS_local_test.log
+```
+
+The run is successful when Cromwell reports:
+
+```text
+Workflow succeeded
+```
+
+### 5. Locate the final report
+
+Cromwell writes task outputs under:
+
+```text
+~/MRSAvsMSSA/local_cromwell_run/cromwell-executions/
+```
+
+Locate the final HTML report with:
+
+```bash
+find \
+  ~/MRSAvsMSSA/local_cromwell_run/cromwell-executions/rMAP_GWAS \
+  -type f \
+  -name "rMAP_GWAS_MRSA_MSSA_4_tiny_lowram_local_report.html" \
+  -print
+```
+
+Open the report on macOS with:
+
+```bash
+open "$(find \
+  ~/MRSAvsMSSA/local_cromwell_run/cromwell-executions/rMAP_GWAS \
+  -type f \
+  -name 'rMAP_GWAS_MRSA_MSSA_4_tiny_lowram_local_report.html' \
+  | head -n 1)"
+```
+
+Other important outputs can be located with:
+
+```bash
+find \
+  ~/MRSAvsMSSA/local_cromwell_run/cromwell-executions/rMAP_GWAS \
+  -type f \
+  \( \
+    -name "*_report.html" \
+    -o -name "*_run_provenance.json" \
+    -o -name "*_report_sections.tsv" \
+    -o -name "*_top_priority_hits*" \
+    -o -name "pyseer_gene_assoc.tsv" \
+    -o -name "mash_distances.tsv" \
+  \) \
+  -print
+```
+
+### Local test configuration
+
+The example uses conservative local resource settings:
+
+| Component | Threads | Memory |
+|---|---:|---:|
+| fastp | 1 | 2 GB |
+| Shovill assembly | 1 | 4 GB |
+| Annotation | 1 | 4 GB |
+| Panaroo | 1 | 6 GB |
+| GWAS | 1 | 4 GB |
+
+The accompanying `cromwell_local_1job.conf` limits Cromwell to one concurrent task. This reduces peak memory usage but increases the total execution time.
+
+### Test interpretation
+
+Because the test contains only four samples, its association statistics should not be interpreted as evidence for or against specific MRSA determinants. Use this dataset only to confirm that:
+
+1. Input validation succeeds.
+2. Paired FASTQ files are processed correctly.
+3. Assemblies and annotations are produced.
+4. Panaroo & pyseer complete.
+5. The optional SNP branch completes.
+6. The final HTML report and provenance files are generated.
+
+For meaningful MRSA-versus-MSSA analysis, use a sufficiently large & appropriately balanced dataset, such as the full 50-case & 50-control validation cohort.
 
 ---
 
