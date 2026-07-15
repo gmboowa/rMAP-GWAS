@@ -61,6 +61,7 @@ workflow rMAP_GWAS {
     Int annotation_threads = 4
     Int pangenome_threads = 4
     Int gwas_threads = 4
+    Int snp_threads = 4
     Int gubbins_threads = 4
 
     Int fastp_memory_gb = 8
@@ -68,6 +69,8 @@ workflow rMAP_GWAS {
     Int annotation_memory_gb = 16
     Int pangenome_memory_gb = 32
     Int gwas_memory_gb = 32
+    Int snp_memory_gb = 128
+    Int snippy_ram_gb = 32
     Int gubbins_memory_gb = 16
 
     Int fastp_disk_gb = 50
@@ -75,7 +78,7 @@ workflow rMAP_GWAS {
     Int annotation_disk_gb = 100
     Int pangenome_disk_gb = 300
     Int gwas_disk_gb = 300
-    Int snp_disk_gb = 300
+    Int snp_disk_gb = 1000
     Int gubbins_disk_gb = 300
 
     # Docker images
@@ -92,18 +95,21 @@ workflow rMAP_GWAS {
     String panaroo_docker = "quay.io/biocontainers/panaroo:1.5.2--pyhdfd78af_0"
     # Combined linux/amd64 image for local Colima testing and Cromwell execution.
     # Contains pyseer, mash, Python, pandas, numpy, scipy, statsmodels, scikit-learn and tqdm.
-    String mash_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.3"
-    String pyseer_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.3"
+    String mash_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.2"
+    String pyseer_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.2"
     # Dedicated reference-based SNP-calling image. This keeps mapping/SNP calling
     # separate from the pyseer/statistics image and avoids missing bwa/samtools/bcftools errors.
     String snp_calling_docker = "staphb/snippy:4.6.0"
     # Optional recombination module. Used only when do_gubbins=true.
     String gubbins_docker = "staphb/gubbins:latest"
-    String python_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.3"
+    String python_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.2"
     # Docker image used for post-GWAS reference annotation and plot generation.
     # Keep this Python-capable; the task uses pure Python and does not require BLAST.
-    String hit_annotation_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.3"
+    String hit_annotation_docker = "gmboowa/rmap-gwas-pyseer-annotate:0.2"
     Int plot_max_points = 5000
+    # To keep the self-contained HTML responsive, only files at or below this size
+    # are embedded as base64 download links. Larger outputs remain explicit workflow outputs.
+    Int report_inline_file_limit_mb = 5
 
     # Reference/provenance settings. This records the species-specific reference package used or intended for the run.
     String reference_docker = "gmboowa/rmap-gwas-mtbc-refs:2026.06"
@@ -300,9 +306,10 @@ workflow rMAP_GWAS {
         read2s = FASTP_TRIM.trimmed_read2,
         reference_fasta = EXTRACT_REFERENCE_GENBANK_FROM_DOCKER.reference_fasta,
         snp_min_qual = snp_min_qual,
-        threads = gwas_threads,
-        memory_gb = gwas_memory_gb,
+        threads = snp_threads,
+        memory_gb = snp_memory_gb,
         disk_gb = snp_disk_gb,
+        snippy_ram_gb = snippy_ram_gb,
         docker = snp_calling_docker
     }
 
@@ -366,8 +373,11 @@ workflow rMAP_GWAS {
   File gubbins_log_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_log, MAKE_GUBBINS_EMPTY_OUTPUTS.gubbins_log])
   File gubbins_filtered_vcf_for_report = select_first([GUBBINS_RECOMBINATION_FILTER.gubbins_filtered_vcf, MAKE_GUBBINS_EMPTY_OUTPUTS.gubbins_filtered_vcf])
   File snp_pyseer_assoc_for_report = select_first([PYSEER_SNP_GWAS.pyseer_snp_assoc, MAKE_SNP_GWAS_EMPTY_OUTPUTS.pyseer_snp_assoc])
+  File snp_all_ranked_hits_for_report = select_first([PRIORITIZE_SNP_GWAS_HITS.snp_all_ranked_hits, MAKE_SNP_GWAS_EMPTY_OUTPUTS.snp_all_ranked_hits])
   File snp_top_hits_for_report = select_first([PRIORITIZE_SNP_GWAS_HITS.snp_top_hits, MAKE_SNP_GWAS_EMPTY_OUTPUTS.snp_top_hits])
   File snp_all_significant_hits_for_report = select_first([PRIORITIZE_SNP_GWAS_HITS.snp_all_significant_hits, MAKE_SNP_GWAS_EMPTY_OUTPUTS.snp_all_significant_hits])
+  File snp_all_nominal_hits_for_report = select_first([PRIORITIZE_SNP_GWAS_HITS.snp_all_nominal_hits, MAKE_SNP_GWAS_EMPTY_OUTPUTS.snp_all_nominal_hits])
+  File snp_all_bonferroni_hits_for_report = select_first([PRIORITIZE_SNP_GWAS_HITS.snp_all_bonferroni_hits, MAKE_SNP_GWAS_EMPTY_OUTPUTS.snp_all_bonferroni_hits])
   File snp_summary_for_report = select_first([PRIORITIZE_SNP_GWAS_HITS.snp_summary, MAKE_SNP_GWAS_EMPTY_OUTPUTS.snp_summary])
   File snp_manhattan_plot_for_report = select_first([GENERATE_SNP_GWAS_PLOTS.snp_manhattan_plot_svg, MAKE_SNP_GWAS_EMPTY_OUTPUTS.snp_manhattan_plot_svg])
   File snp_qq_plot_for_report = select_first([GENERATE_SNP_GWAS_PLOTS.snp_qq_plot_svg, MAKE_SNP_GWAS_EMPTY_OUTPUTS.snp_qq_plot_svg])
@@ -407,6 +417,7 @@ workflow rMAP_GWAS {
       top_priority_hits = ANNOTATE_GWAS_HITS_WITH_GENBANK.annotated_top_priority_hits,
       all_significant_hits = ANNOTATE_GWAS_HITS_WITH_GENBANK.annotated_all_significant_hits,
       reference_annotation_summary = ANNOTATE_GWAS_HITS_WITH_GENBANK.reference_annotation_summary,
+      enrichment_summary = PRIORITIZE_GWAS_HITS.enrichment_summary,
       qq_plot_svg = GENERATE_GWAS_PLOTS.qq_plot_svg,
       manhattan_plot_svg = GENERATE_GWAS_PLOTS.manhattan_plot_svg,
       plot_summary = GENERATE_GWAS_PLOTS.plot_summary,
@@ -426,6 +437,8 @@ workflow rMAP_GWAS {
       gubbins_log = gubbins_log_for_report,
       snp_top_hits = snp_top_hits_for_report,
       snp_all_significant_hits = snp_all_significant_hits_for_report,
+      snp_all_nominal_hits = snp_all_nominal_hits_for_report,
+      snp_all_bonferroni_hits = snp_all_bonferroni_hits_for_report,
       snp_summary = snp_summary_for_report,
       pyseer_snp_assoc = snp_pyseer_assoc_for_report,
       snp_vcf = snp_vcf_for_report,
@@ -436,6 +449,15 @@ workflow rMAP_GWAS {
       reference_species = reference_species,
       reference_name = reference_name,
       annotation_engine = annotation_engine,
+      inline_download_limit_mb = report_inline_file_limit_mb,
+      python_docker = python_docker
+  }
+
+  call VALIDATE_HTML_REPORT {
+    input:
+      html_report = MERGE_RMAP_GWAS_REPORT.html_report,
+      output_prefix = output_prefix,
+      do_snp_gwas = do_snp_gwas,
       python_docker = python_docker
   }
 
@@ -458,8 +480,11 @@ workflow rMAP_GWAS {
     File kinship_heatmap_svg = GENERATE_POPULATION_STRUCTURE_PLOTS.kinship_heatmap_svg
     File population_structure_summary = GENERATE_POPULATION_STRUCTURE_PLOTS.population_structure_summary
     File pyseer_gene_assoc = PYSEER_GENE_GWAS.pyseer_gene_assoc
+    File all_ranked_gene_hits = PRIORITIZE_GWAS_HITS.all_ranked_hits
     File raw_top_priority_hits = PRIORITIZE_GWAS_HITS.top_priority_hits
     File raw_all_significant_hits = PRIORITIZE_GWAS_HITS.all_significant_hits
+    File all_nominal_gene_hits = PRIORITIZE_GWAS_HITS.all_nominal_hits
+    File all_bonferroni_gene_hits = PRIORITIZE_GWAS_HITS.all_bonferroni_hits
     File top_priority_hits = ANNOTATE_GWAS_HITS_WITH_GENBANK.annotated_top_priority_hits
     File all_significant_hits = ANNOTATE_GWAS_HITS_WITH_GENBANK.annotated_all_significant_hits
     File reference_annotation_summary = ANNOTATE_GWAS_HITS_WITH_GENBANK.reference_annotation_summary
@@ -477,14 +502,18 @@ workflow rMAP_GWAS {
     File gubbins_log = gubbins_log_for_report
     File gubbins_filtered_vcf = gubbins_filtered_vcf_for_report
     File pyseer_snp_assoc = snp_pyseer_assoc_for_report
+    File snp_all_ranked_hits = snp_all_ranked_hits_for_report
     File snp_top_hits = snp_top_hits_for_report
     File snp_all_significant_hits = snp_all_significant_hits_for_report
+    File snp_all_nominal_hits = snp_all_nominal_hits_for_report
+    File snp_all_bonferroni_hits = snp_all_bonferroni_hits_for_report
     File snp_summary = snp_summary_for_report
     File snp_manhattan_plot_svg = snp_manhattan_plot_for_report
     File snp_qq_plot_svg = snp_qq_plot_for_report
     File snp_plot_summary = snp_plot_summary_for_report
-    File html_report = MERGE_RMAP_GWAS_REPORT.html_report
-    File report_sections_tsv = MERGE_RMAP_GWAS_REPORT.report_sections_tsv
+    File html_report = VALIDATE_HTML_REPORT.validated_html_report
+    File report_integrity_summary = VALIDATE_HTML_REPORT.report_integrity_summary
+    File report_build_summary = MERGE_RMAP_GWAS_REPORT.report_build_summary
     File run_provenance = MERGE_RMAP_GWAS_REPORT.run_provenance_json
   }
 }
@@ -1370,85 +1399,107 @@ alpha = float("~{significance_alpha}")
 prefix = "~{output_prefix}"
 annotation_source = "Panaroo/" + """~{annotation_engine}""".strip()
 
-# Read phenotype coding.
-phenotypes = {}
-with phenotype_path.open() as fh:
-    header = fh.readline().rstrip("\n").split("\t")
-    for line in fh:
-        if not line.strip():
-            continue
-        parts = line.rstrip("\n").split("\t")
-        phenotypes[parts[0]] = int(float(parts[1]))
 
-cases = {s for s, v in phenotypes.items() if v == 1}
-controls = {s for s, v in phenotypes.items() if v == 0}
-
-# Read Panaroo gene annotations.
-annotations = {}
-try:
-    with panaroo_csv_path.open(newline="") as fh:
-        reader = csv.DictReader(fh)
-        for row in reader:
-            gid = row.get("Gene", "")
-            annotations[gid] = {
-                "gene_name": row.get("Non-unique Gene name", "") or gid,
-                "product": row.get("Annotation", "") or "",
-            }
-except Exception:
-    pass
-
-# Read gene presence/absence matrix.
-presence = {}
-with rtab_path.open() as fh:
-    header = fh.readline().rstrip("\n").split("\t")
-    sample_cols = header[1:]
-    for line in fh:
-        if not line.strip():
-            continue
-        parts = line.rstrip("\n").split("\t")
-        gene = parts[0]
-        vals = parts[1:]
-        present_samples = {s for s, v in zip(sample_cols, vals) if v not in ("0", "", "NA", ".")}
-        presence[gene] = present_samples
-
-def parse_float(x):
+def parse_float(value):
     try:
-        if x in ("", "NA", "nan", "None"):
+        if value is None or str(value).strip() in ("", "NA", "nan", "None", "."):
             return None
-        return float(x)
+        number = float(value)
+        if math.isnan(number):
+            return None
+        return number
     except Exception:
         return None
 
+
 def pick(row, names):
-    lower = {k.lower(): k for k in row}
-    for n in names:
-        if n in row:
-            return row[n]
-        if n.lower() in lower:
-            return row[lower[n.lower()]]
+    lower = {str(k).lower(): k for k in row}
+    for name in names:
+        if name in row:
+            return row[name]
+        if name.lower() in lower:
+            return row[lower[name.lower()]]
     return ""
 
-# Read pyseer associations. Try to be robust to pyseer column naming.
-assoc_rows = []
-with assoc_path.open() as fh:
-    first = fh.readline().rstrip("\n")
-    if not first:
-        header = []
-    else:
-        header = re.split(r"\t|\s+", first.strip())
+
+def bh_adjust(pvalues):
+    """Benjamini-Hochberg adjusted p-values in original input order."""
+    m = len(pvalues)
+    if m == 0:
+        return []
+    order = sorted(range(m), key=lambda i: pvalues[i])
+    adjusted = [1.0] * m
+    running = 1.0
+    for reverse_rank, index in enumerate(reversed(order), start=1):
+        rank = m - reverse_rank + 1
+        candidate = min(1.0, pvalues[index] * m / rank)
+        running = min(running, candidate)
+        adjusted[index] = running
+    return adjusted
+
+
+# Read binary phenotype coding.
+phenotypes = {}
+with phenotype_path.open(errors="replace") as fh:
+    fh.readline()
     for line in fh:
         if not line.strip():
+            continue
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) >= 2:
+            phenotypes[parts[0]] = int(float(parts[1]))
+
+cases = {sample for sample, value in phenotypes.items() if value == 1}
+controls = {sample for sample, value in phenotypes.items() if value == 0}
+
+# Read native Panaroo annotation.
+annotations = {}
+try:
+    with panaroo_csv_path.open(newline="", errors="replace") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            feature = row.get("Gene", "")
+            if feature:
+                annotations[feature] = {
+                    "gene_name": row.get("Non-unique Gene name", "") or feature,
+                    "product": row.get("Annotation", "") or "",
+                }
+except Exception:
+    pass
+
+# Read presence/absence matrix.
+presence = {}
+with rtab_path.open(errors="replace") as fh:
+    header = fh.readline().rstrip("\n").split("\t")
+    sample_columns = header[1:]
+    for line in fh:
+        if not line.strip():
+            continue
+        parts = line.rstrip("\n").split("\t")
+        feature = parts[0]
+        values = parts[1:]
+        presence[feature] = {
+            sample for sample, value in zip(sample_columns, values)
+            if value not in ("0", "", "NA", ".")
+        }
+
+# Read pyseer output robustly.
+assoc_rows = []
+with assoc_path.open(errors="replace") as fh:
+    first = fh.readline().rstrip("\n")
+    header = re.split(r"\t|\s+", first.strip()) if first else []
+    for line in fh:
+        if not line.strip() or line.startswith("#"):
             continue
         parts = re.split(r"\t|\s+", line.strip())
         if len(parts) < len(header):
             parts += [""] * (len(header) - len(parts))
-        row = dict(zip(header, parts))
-        assoc_rows.append(row)
+        assoc_rows.append(dict(zip(header, parts)))
 
-# If pyseer did not print a recognizable header, create a fallback.
-if assoc_rows and not any(h.lower() in ("variant", "gene", "feature", "notes") for h in header):
+# Headerless fallback for common pyseer output.
+if assoc_rows and not any(str(h).lower() in ("variant", "gene", "feature", "notes") for h in header):
     assoc_rows = []
-    with assoc_path.open() as fh:
+    with assoc_path.open(errors="replace") as fh:
         for line in fh:
             if line.startswith("#") or not line.strip():
                 continue
@@ -1461,45 +1512,47 @@ if assoc_rows and not any(h.lower() in ("variant", "gene", "feature", "notes") f
                     "lrt-pvalue": parts[3],
                 })
 
-enriched_rows = []
-all_rows = []
-
-for row in assoc_rows:
-    feature = pick(row, ["variant", "gene", "feature", "samples", "name"])
+parsed = []
+for source_row in assoc_rows:
+    feature = pick(source_row, ["variant", "gene", "feature", "samples", "name"])
     if not feature:
-        feature = next(iter(row.values())) if row else ""
+        feature = next(iter(source_row.values())) if source_row else ""
+    pvalue = parse_float(pick(source_row, ["lrt-pvalue", "lrt_pvalue", "pvalue", "p-value", "filter-pvalue", "p"]))
+    beta = parse_float(pick(source_row, ["beta", "effect", "coef", "coefficient"]))
+    if pvalue is None or not (0 < pvalue <= 1):
+        continue
+    parsed.append({"feature": feature, "pvalue": pvalue, "beta": beta})
 
-    pval = parse_float(pick(row, ["lrt-pvalue", "lrt_pvalue", "pvalue", "p-value", "filter-pvalue", "p"]))
-    qval = parse_float(pick(row, ["q_value", "q-value", "qvalue", "adjusted-pvalue", "adjusted_pvalue"]))
-    beta = parse_float(pick(row, ["beta", "effect", "coef", "coefficient"]))
+pvalues = [row["pvalue"] for row in parsed]
+qvalues = bh_adjust(pvalues)
+number_tests = len(pvalues)
+bonferroni_threshold = alpha / number_tests if number_tests else 0.0
+
+all_rows = []
+for source, qvalue in zip(parsed, qvalues):
+    feature = source["feature"]
+    pvalue = source["pvalue"]
+    beta = source["beta"]
 
     present = presence.get(feature, set())
     case_present = len(present & cases)
     control_present = len(present & controls)
     case_total = len(cases)
     control_total = len(controls)
-    case_freq = case_present / case_total if case_total else 0.0
-    control_freq = control_present / control_total if control_total else 0.0
+    case_frequency = case_present / case_total if case_total else 0.0
+    control_frequency = control_present / control_total if control_total else 0.0
 
-    # If beta is unavailable, use frequency difference to assign direction.
     if beta is None:
-        beta = case_freq - control_freq
+        beta = case_frequency - control_frequency
 
-    if case_freq > control_freq and beta >= 0:
+    if case_frequency > control_frequency and beta >= 0:
         enriched_in = "Cases"
-    elif control_freq > case_freq and beta <= 0:
+    elif control_frequency > case_frequency and beta <= 0:
         enriched_in = "Controls"
     else:
         enriched_in = "Check manually"
 
-    # Use q-value if present, otherwise p-value for provisional ranking.
-    stat = qval if qval is not None else pval
-    if stat is None or stat <= 0:
-        neglog = 0.0
-    else:
-        neglog = -math.log10(stat)
-
-    # Haldane-Anscombe corrected odds ratio and 95% CI for binary phenotype.
+    # Haldane-Anscombe corrected odds ratio and 95% CI.
     a = case_present + 0.5
     b = (case_total - case_present) + 0.5
     c = control_present + 0.5
@@ -1507,81 +1560,108 @@ for row in assoc_rows:
     odds_ratio = (a / b) / (c / d)
     se_log_or = math.sqrt((1.0 / a) + (1.0 / b) + (1.0 / c) + (1.0 / d))
     log_or = math.log(odds_ratio) if odds_ratio > 0 and math.isfinite(odds_ratio) else 0.0
-    or_ci_low = math.exp(log_or - 1.96 * se_log_or)
-    or_ci_high = math.exp(log_or + 1.96 * se_log_or)
+    ci_low = math.exp(log_or - 1.96 * se_log_or)
+    ci_high = math.exp(log_or + 1.96 * se_log_or)
     log2_or = math.log2(odds_ratio) if odds_ratio > 0 and math.isfinite(odds_ratio) else 0.0
 
-    ann = annotations.get(feature, {})
-    gene_name = ann.get("gene_name", feature)
-    product = ann.get("product", "")
+    nominal = pvalue <= alpha
+    fdr = qvalue <= alpha
+    bonferroni = pvalue <= bonferroni_threshold if number_tests else False
+    significance_class = (
+        "bonferroni" if bonferroni else
+        "fdr" if fdr else
+        "nominal" if nominal else
+        "not_significant"
+    )
 
+    annotation = annotations.get(feature, {})
+    gene_name = annotation.get("gene_name", feature)
+    product = annotation.get("product", "")
     annotation_weight = 2 if product or (gene_name and gene_name != feature) else 0
     recurrence_weight = 1 if max(case_present, control_present) >= 5 else 0
-    priority_score = neglog + abs(log2_or) + annotation_weight + recurrence_weight
+    corrected_strength = -math.log10(max(qvalue, 1e-300))
+    priority_score = corrected_strength + abs(log2_or) + annotation_weight + recurrence_weight
 
-    outrow = {
+    all_rows.append({
         "feature_id": feature,
         "feature_type": "gene_presence_absence",
         "gene_name": gene_name,
         "product": product,
         "case_present": case_present,
         "case_total": case_total,
-        "case_frequency": f"{case_freq:.4f}",
+        "case_frequency": f"{case_frequency:.4f}",
         "control_present": control_present,
         "control_total": control_total,
-        "control_frequency": f"{control_freq:.4f}",
+        "control_frequency": f"{control_frequency:.4f}",
         "enriched_in": enriched_in,
         "beta": f"{beta:.6g}",
         "odds_ratio": f"{odds_ratio:.6g}" if math.isfinite(odds_ratio) else "Inf",
-        "odds_ratio_ci95_lower": f"{or_ci_low:.6g}",
-        "odds_ratio_ci95_upper": f"{or_ci_high:.6g}",
-        "odds_ratio_ci95": f"{or_ci_low:.4g}-{or_ci_high:.4g}",
-        "pyseer_pvalue": "" if pval is None else f"{pval:.6g}",
-        "q_value": "" if qval is None else f"{qval:.6g}",
+        "odds_ratio_ci95_lower": f"{ci_low:.6g}",
+        "odds_ratio_ci95_upper": f"{ci_high:.6g}",
+        "odds_ratio_ci95": f"{ci_low:.4g}-{ci_high:.4g}",
+        "pyseer_pvalue": f"{pvalue:.8g}",
+        "q_value": f"{qvalue:.8g}",
+        "nominal_significant": str(nominal).lower(),
+        "fdr_significant": str(fdr).lower(),
+        "bonferroni_significant": str(bonferroni).lower(),
+        "significance_class": significance_class,
         "priority_score": f"{priority_score:.4f}",
         "annotation_source": annotation_source,
-        "notes": ""
-    }
-    all_rows.append(outrow)
+        "notes": "BH q-value calculated within rMAP-GWAS from all valid pyseer p-values.",
+    })
 
-    # Accept q <= alpha if q exists, else p <= alpha.
-    if (qval is not None and qval <= alpha) or (qval is None and pval is not None and pval <= alpha):
-        enriched_rows.append(outrow)
-
-all_rows.sort(key=lambda r: float(r["priority_score"]), reverse=True)
-enriched_rows.sort(key=lambda r: float(r["priority_score"]), reverse=True)
+# Corrected significance controls the primary hit tables.
+all_rows.sort(key=lambda row: (float(row["q_value"]), float(row["pyseer_pvalue"]), -abs(float(row["beta"]))))
+fdr_rows = [row for row in all_rows if row["fdr_significant"] == "true"]
+bonferroni_rows = [row for row in all_rows if row["bonferroni_significant"] == "true"]
+nominal_rows = [row for row in all_rows if row["nominal_significant"] == "true"]
 
 fields = [
     "rank", "feature_id", "feature_type", "gene_name", "product",
     "case_present", "case_total", "case_frequency",
     "control_present", "control_total", "control_frequency",
-    "enriched_in", "beta", "odds_ratio", "odds_ratio_ci95_lower", "odds_ratio_ci95_upper", "odds_ratio_ci95", "pyseer_pvalue", "q_value",
-    "priority_score", "annotation_source", "notes"
+    "enriched_in", "beta", "odds_ratio", "odds_ratio_ci95_lower",
+    "odds_ratio_ci95_upper", "odds_ratio_ci95", "pyseer_pvalue", "q_value",
+    "nominal_significant", "fdr_significant", "bonferroni_significant",
+    "significance_class", "priority_score", "annotation_source", "notes"
 ]
+
 
 def write_table(path, rows):
     with open(path, "w", newline="") as out:
-        writer = csv.DictWriter(out, fieldnames=fields, delimiter="\t")
+        writer = csv.DictWriter(out, fieldnames=fields, delimiter="\t", extrasaction="ignore")
         writer.writeheader()
-        for i, r in enumerate(rows, 1):
-            rr = {"rank": i}
-            rr.update(r)
-            writer.writerow(rr)
+        for rank, row in enumerate(rows, start=1):
+            record = {"rank": rank}
+            record.update(row)
+            writer.writerow(record)
+
 
 write_table(prefix + "_all_ranked_hits.tsv", all_rows)
-write_table(prefix + "_top_priority_hits.tsv", enriched_rows[:100])
-write_table(prefix + "_all_significant_hits.tsv", enriched_rows)
+write_table(prefix + "_top_priority_hits.tsv", fdr_rows[:100])
+write_table(prefix + "_all_significant_hits.tsv", fdr_rows)
+write_table(prefix + "_all_nominal_hits.tsv", nominal_rows)
+write_table(prefix + "_all_bonferroni_hits.tsv", bonferroni_rows)
 
-case_enriched = sum(1 for r in enriched_rows if r["enriched_in"] == "Cases")
-control_enriched = sum(1 for r in enriched_rows if r["enriched_in"] == "Controls")
+case_fdr = sum(1 for row in fdr_rows if row["enriched_in"] == "Cases")
+control_fdr = sum(1 for row in fdr_rows if row["enriched_in"] == "Controls")
+fdr_p_cutoff = max((float(row["pyseer_pvalue"]) for row in fdr_rows), default=0.0)
 
 with open(prefix + "_enrichment_summary.tsv", "w") as out:
     out.write("metric\tvalue\n")
-    out.write(f"total_ranked_features\t{len(all_rows)}\n")
-    out.write(f"significant_features\t{len(enriched_rows)}\n")
-    out.write(f"case_enriched_significant_features\t{case_enriched}\n")
-    out.write(f"control_enriched_significant_features\t{control_enriched}\n")
-    out.write(f"alpha\t{alpha}\n")
+    out.write(f"multiple_testing_method\tBenjamini-Hochberg FDR and Bonferroni\n")
+    out.write(f"family_alpha\t{alpha}\n")
+    out.write(f"valid_pvalues_tested\t{number_tests}\n")
+    out.write(f"nominal_pvalue_threshold\t{alpha}\n")
+    out.write(f"fdr_qvalue_threshold\t{alpha}\n")
+    out.write(f"fdr_equivalent_pvalue_cutoff\t{fdr_p_cutoff if fdr_p_cutoff else 'NA'}\n")
+    out.write(f"bonferroni_pvalue_threshold\t{bonferroni_threshold if number_tests else 'NA'}\n")
+    out.write(f"nominal_significant_features\t{len(nominal_rows)}\n")
+    out.write(f"fdr_significant_features\t{len(fdr_rows)}\n")
+    out.write(f"bonferroni_significant_features\t{len(bonferroni_rows)}\n")
+    out.write(f"case_enriched_fdr_features\t{case_fdr}\n")
+    out.write(f"control_enriched_fdr_features\t{control_fdr}\n")
+    out.write("primary_reported_significance\tBH_FDR_q_value\n")
 PY
   >>>
 
@@ -1589,6 +1669,8 @@ PY
     File all_ranked_hits = "~{output_prefix}_all_ranked_hits.tsv"
     File top_priority_hits = "~{output_prefix}_top_priority_hits.tsv"
     File all_significant_hits = "~{output_prefix}_all_significant_hits.tsv"
+    File all_nominal_hits = "~{output_prefix}_all_nominal_hits.tsv"
+    File all_bonferroni_hits = "~{output_prefix}_all_bonferroni_hits.tsv"
     File enrichment_summary = "~{output_prefix}_enrichment_summary.tsv"
   }
 
@@ -1599,7 +1681,6 @@ PY
     disks: "local-disk 100 HDD"
   }
 }
-
 
 task EXTRACT_REFERENCE_GENBANK_FROM_DOCKER {
   input {
@@ -1792,71 +1873,135 @@ def parse_location(location):
         parts.append((start, end))
     return comp, parts
 
+def _append_qualifier(qualifiers, key, raw_value):
+    """Append a possibly quoted GenBank qualifier without merging section headers."""
+    value = (raw_value or "").strip()
+    if value.startswith('"'):
+        value = value[1:]
+    if value.endswith('"'):
+        value = value[:-1]
+    if key == "translation":
+        value = re.sub(r"\s+", "", value)
+        sep = ""
+    else:
+        value = re.sub(r"\s+", " ", value).strip()
+        sep = " " if qualifiers.get(key) and value else ""
+    qualifiers[key] = qualifiers.get(key, "") + sep + value
+
+
 def parse_genbank(path):
-    txt = Path(path).read_text(errors="replace")
-    origin = ""
-    m = re.search(r"\nORIGIN\s*(.*?)(?=\n//)", txt, flags=re.S)
-    if m:
-        origin = re.sub(r"[^A-Za-z]", "", m.group(1)).upper()
-    features_text = ""
-    m = re.search(r"\nFEATURES\s+Location/Qualifiers\s*(.*?)(?=\nORIGIN)", txt, flags=re.S)
-    if m:
-        features_text = m.group(1)
-    lines = features_text.splitlines()
-    cds = []
-    current = None
-    current_key = None
-    for line in lines:
-        if re.match(r"^     \S+", line):
-            key = line[5:21].strip()
-            loc = line[21:].strip()
-            if key == "CDS":
-                current = {"location": loc, "qualifiers": {}}
-                cds.append(current)
-                current_key = None
-            else:
-                current = None
-                current_key = None
-            continue
-        if current is None:
-            continue
-        st = line.strip()
-        if not st:
-            continue
-        qm = re.match(r"/([^=]+)=(.*)", st)
-        if qm:
-            current_key = qm.group(1)
-            val = qm.group(2).strip()
-            if val.startswith('"') and val.endswith('"'):
-                val = val[1:-1]
-            elif val.startswith('"'):
-                val = val[1:]
-            current["qualifiers"].setdefault(current_key, "")
-            current["qualifiers"][current_key] += val
-        elif current_key:
-            val = st.strip()
-            if val.endswith('"'):
-                val = val[:-1]
-            current["qualifiers"][current_key] += val
+    """Parse every GenBank record, including multi-record/contig references.
+
+    The previous parser searched from the first FEATURES block to the first later
+    ORIGIN block. For draft references containing CONTIG records, that could
+    merge record headers into qualifier text and parse only a small subset of CDS
+    features. This parser splits on record terminators and handles each FEATURES
+    block independently.
+    """
+    p = Path(path)
+    txt = p.read_text(errors="replace") if p.exists() else ""
+    record_blocks = [r for r in re.split(r"(?m)^//\s*$", txt) if r.strip()]
     refs = []
-    for i, f in enumerate(cds, 1):
-        q = f.get("qualifiers", {})
-        locus = q.get("locus_tag", "") or q.get("protein_id", "") or f"CDS_{i}"
-        gene = q.get("gene", "")
-        product = q.get("product", "")
-        protein_id = q.get("protein_id", "")
-        translation = q.get("translation", "").replace(" ", "").replace("\n", "").upper()
-        comp, loc_parts = parse_location(f.get("location", ""))
-        nuc = ""
-        if origin and loc_parts:
-            seqs = []
-            for start, end in loc_parts:
-                seqs.append(origin[start-1:end])
-            nuc = "".join(seqs)
-            if comp:
-                nuc = revcomp(nuc)
-        refs.append({"id": locus, "locus_tag": locus, "gene": gene, "product": product, "protein_id": protein_id, "location": f.get("location", ""), "nuc": nuc, "prot": translation})
-    return refs
+    metrics = {
+        "records_seen": len(record_blocks),
+        "records_with_features": 0,
+        "records_with_origin": 0,
+        "total_origin_bp": 0,
+    }
+
+    for record_index, record in enumerate(record_blocks, start=1):
+        locus_match = re.search(r"(?m)^LOCUS\s+(\S+)", record)
+        accession_match = re.search(r"(?m)^ACCESSION\s+(\S+)", record)
+        record_id = (
+            (locus_match.group(1) if locus_match else "")
+            or (accession_match.group(1) if accession_match else "")
+            or f"record_{record_index}"
+        )
+
+        origin = ""
+        origin_match = re.search(r"(?ms)^ORIGIN\s*\n(.*)$", record)
+        if origin_match:
+            origin = re.sub(r"[^A-Za-z]", "", origin_match.group(1)).upper()
+            metrics["records_with_origin"] += 1
+            metrics["total_origin_bp"] += len(origin)
+
+        features_match = re.search(
+            r"(?ms)^FEATURES\s+Location/Qualifiers\s*\n"
+            r"(.*?)(?=^(?:ORIGIN|CONTIG|BASE COUNT|WGS|WGS_SCAFLD)\b|\Z)",
+            record,
+        )
+        if not features_match:
+            continue
+        metrics["records_with_features"] += 1
+
+        cds_features = []
+        current = None
+        current_key = None
+        for line in features_match.group(1).splitlines():
+            # Feature keys occupy columns 6-20. Qualifier lines have blanks there.
+            feature_key = line[5:21].strip() if len(line) >= 21 and line.startswith("     ") else ""
+            if feature_key:
+                location = line[21:].strip()
+                if feature_key == "CDS":
+                    current = {
+                        "record_id": record_id,
+                        "location": location,
+                        "qualifiers": {},
+                        "origin": origin,
+                    }
+                    cds_features.append(current)
+                else:
+                    current = None
+                current_key = None
+                continue
+
+            if current is None:
+                continue
+            stripped = line.strip()
+            if not stripped:
+                continue
+
+            qualifier_match = re.match(r"/([^=\s]+)(?:=(.*))?$", stripped)
+            if qualifier_match:
+                current_key = qualifier_match.group(1)
+                _append_qualifier(current["qualifiers"], current_key, qualifier_match.group(2) or "true")
+            elif current_key is None:
+                # Wrapped feature location before the first qualifier.
+                current["location"] += stripped
+            else:
+                _append_qualifier(current["qualifiers"], current_key, stripped)
+
+        for feature_index, feature in enumerate(cds_features, start=1):
+            qualifiers = feature.get("qualifiers", {})
+            locus = (
+                qualifiers.get("locus_tag", "")
+                or qualifiers.get("protein_id", "")
+                or f"{record_id}_CDS_{feature_index}"
+            )
+            gene = qualifiers.get("gene", "")
+            product = qualifiers.get("product", "")
+            protein_id = qualifiers.get("protein_id", "")
+            translation = re.sub(r"\s+", "", qualifiers.get("translation", "")).upper()
+            complement, location_parts = parse_location(feature.get("location", ""))
+            nucleotide = ""
+            if feature.get("origin") and location_parts:
+                pieces = [feature["origin"][start - 1:end] for start, end in location_parts]
+                nucleotide = "".join(pieces)
+                if complement:
+                    nucleotide = revcomp(nucleotide)
+            refs.append({
+                "id": locus,
+                "record_id": record_id,
+                "locus_tag": locus,
+                "gene": gene,
+                "product": product,
+                "protein_id": protein_id,
+                "location": feature.get("location", ""),
+                "nuc": nucleotide,
+                "prot": translation,
+            })
+
+    return refs, metrics
 
 def split_members(x):
     if not x:
@@ -1886,11 +2031,19 @@ for fp in ["~{combined_dna_cds}", "~{pan_genome_reference}"]:
     fasta_records.update(parse_fasta(fp))
 
 reference_parse_warning = ""
+reference_metrics = {"records_seen": 0, "records_with_features": 0, "records_with_origin": 0, "total_origin_bp": 0}
 try:
-    refs = parse_genbank("~{reference_genbank}")
+    refs, reference_metrics = parse_genbank("~{reference_genbank}")
 except Exception as e:
     refs = []
     reference_parse_warning = f"{type(e).__name__}: {e}"
+if len(refs) < 500:
+    low_count_warning = (
+        f"Only {len(refs)} CDS features were parsed from "
+        f"{reference_metrics.get('records_seen', 0)} GenBank record(s). "
+        "Reference rescue is considered incomplete and low-confidence candidates will be suppressed."
+    )
+    reference_parse_warning = "; ".join(x for x in [reference_parse_warning, low_count_warning] if x)
 ref_by_token = {}
 for r in refs:
     for token in [r.get("locus_tag", ""), r.get("gene", ""), r.get("protein_id", "")]:
@@ -1954,18 +2107,95 @@ def score_sequence_to_reference(seq):
     return None
 
 def confidence(identity, coverage, match_type):
+    """Reference-rescue confidence using the published rMAP-GWAS rules."""
+    if match_type == "qualifier_exact":
+        return "high"
     try:
         ident = float(identity)
         cov = float(coverage)
     except Exception:
         return "none"
-    if ident >= 95 and cov >= 80:
+    if ident >= 95 and cov >= 90:
         return "high"
-    if ident >= 80 and cov >= 60:
+    if ident >= 85 and cov >= 70:
         return "medium"
-    if ident >= 60 and cov >= 40:
+    if ident >= 60 and cov >= 50:
         return "low"
     return "none"
+
+
+def _native_display_gene(gene_name, product, feature):
+    """Prefer the most specific native Panaroo/Bakta or Panaroo/Prokka gene token."""
+    gene_name = (gene_name or "").strip()
+    product = (product or "").strip()
+    blob = gene_name + " " + product
+    if re.search(r"\bblaOXA[-_ ]?23\b", blob, flags=re.I) or re.search(r"\bOXA[-_ ]?23\b", product, flags=re.I):
+        return "blaOXA-23"
+    tokens = [token.strip() for token in re.split(r"[;,|~]+", gene_name) if token.strip()]
+    informative = [
+        token for token in tokens
+        if token.lower() not in ("hypothetical protein", "unknown", "uncharacterized protein")
+        and not token.lower().startswith("group_")
+    ]
+    if informative:
+        return sorted(
+            informative,
+            key=lambda token: (bool(re.search(r"\d", token)), "-" in token, len(token)),
+            reverse=True,
+        )[0]
+    return feature
+
+
+def _native_display_product(gene_name, product):
+    blob = (gene_name or "") + " " + (product or "")
+    if re.search(r"\bblaOXA[-_ ]?23\b", blob, flags=re.I) or re.search(r"\bOXA[-_ ]?23\b", blob, flags=re.I):
+        return "OXA-23 family carbapenem-hydrolysing class D beta-lactamase"
+    parts = []
+    seen = set()
+    for token in re.split(r"\s*;\s*", product or ""):
+        clean = token.strip()
+        key = clean.lower()
+        if clean and key not in seen:
+            parts.append(clean)
+            seen.add(key)
+    return "; ".join(parts)
+
+
+def native_annotation_confidence(gene_name, product, feature):
+    """Confidence in the native annotation, independently of GenBank rescue.
+
+    A specific named gene plus a non-generic product is considered high confidence.
+    A specific gene or informative product alone is medium confidence. Generic
+    group/hypothetical annotations remain none. This prevents a valid Bakta or
+    Prokka call such as blaOXA-23 from being labelled non-confident merely because
+    the selected chromosomal reference does not contain an acquired resistance gene.
+    """
+    display_gene = _native_display_gene(gene_name, product, feature)
+    display_product = _native_display_product(gene_name, product)
+    generic_products = {
+        "", "hypothetical protein", "unknown", "uncharacterized protein",
+        "putative protein", "predicted protein"
+    }
+    specific_gene = (
+        bool(display_gene)
+        and display_gene != feature
+        and not display_gene.lower().startswith("group_")
+        and display_gene.lower() not in generic_products
+    )
+    informative_product = display_product.strip().lower() not in generic_products
+    blob = (display_gene + " " + display_product).lower()
+    if re.search(r"\bblaoxa[-_ ]?23\b", blob) or "oxa-23" in blob or "oxa 23" in blob:
+        return "high"
+    if specific_gene and informative_product:
+        return "high"
+    if specific_gene or informative_product:
+        return "medium"
+    return "none"
+
+
+def confidence_rank(label):
+    return {"none": 0, "low": 1, "medium": 2, "high": 3}.get((label or "none").lower(), 0)
+
 
 def annotate_row(row):
     feature = row.get("feature_id", "") or row.get("gene", "") or row.get("variant", "")
@@ -1973,113 +2203,257 @@ def annotate_row(row):
     members = pan.get("members", [])
     original_gene = row.get("gene_name", "") or pan.get("gene_name", "") or feature
     original_product = row.get("product", "") or pan.get("product", "")
+
+    row["gene_name"] = original_gene
+    row["product"] = original_product
+    row["annotation_source"] = row.get("annotation_source", "") or annotation_source
+
+    native_gene = _native_display_gene(original_gene, original_product, feature)
+    native_product = _native_display_product(original_gene, original_product)
+    native_confidence = native_annotation_confidence(original_gene, original_product, feature)
+
     match = None
     note = ""
     match_type = "none"
     identity = ""
     coverage = ""
-    for token in [feature, original_gene] + members[:100]:
+
+    for token in [feature, original_gene, native_gene] + members[:100]:
         if token in ref_by_token:
             match = ref_by_token[token]
             match_type = "qualifier_exact"
             identity = "100.0"
             coverage = "100.0"
             break
+
     if match is None:
         best = None
-        for header, seq in find_query_sequences(feature, members):
-            sc = score_sequence_to_reference(seq)
-            if sc:
-                r, ident, cov, mtype = sc
+        for header, sequence in find_query_sequences(feature, members):
+            score = score_sequence_to_reference(sequence)
+            if score:
+                candidate, ident, cov, candidate_type = score
                 rank = float(ident) + float(cov)
                 if best is None or rank > best[-1]:
-                    best = (r, ident, cov, mtype, header, rank)
+                    best = (candidate, ident, cov, candidate_type, header, rank)
         if best:
-            match, ident, cov, match_type, header, rank = best
+            match, ident, cov, match_type, header, _rank = best
             identity = f"{ident:.2f}"
             coverage = f"{cov:.2f}"
             note = f"matched_representative_sequence={header[:120]}"
-    if match is None and original_product and original_product.lower() not in ("hypothetical protein", "unknown"):
-        op = original_product.lower()
-        for r in refs:
-            if r.get("product", "").lower() == op:
-                match = r
+
+    if match is None and native_product and native_product.lower() not in (
+        "hypothetical protein", "unknown", "uncharacterized protein"
+    ):
+        native_product_key = re.sub(r"\s+", " ", native_product).strip().lower()
+        for reference in refs:
+            reference_product_key = re.sub(r"\s+", " ", reference.get("product", "")).strip().lower()
+            if reference_product_key and reference_product_key == native_product_key:
+                match = reference
                 match_type = "product_exact"
-                note = "product-only match; sequence confirmation not available"
+                note = "product-only GenBank match; sequence confirmation not available"
                 break
-    if match is None:
-        row.update({"reference_locus_tag": "", "reference_gene": "", "reference_product": "", "reference_location": "", "reference_match_type": "none", "reference_identity": "", "reference_coverage": "", "annotation_confidence": "none", "annotation_note": "No confident GenBank reference match found. The cluster may be accessory, divergent, absent from the reference, or not represented in Panaroo sequence outputs.", "cluster_member_ids": ";".join(members[:30])})
-    else:
-        conf = confidence(identity or 0, coverage or 0, match_type)
-        if match_type == "product_exact" and conf == "none":
-            conf = "low"
-        row.update({"reference_locus_tag": match.get("locus_tag", ""), "reference_gene": match.get("gene", ""), "reference_product": match.get("product", ""), "reference_location": match.get("location", ""), "reference_match_type": match_type, "reference_identity": identity, "reference_coverage": coverage, "annotation_confidence": conf, "annotation_note": note, "cluster_member_ids": ";".join(members[:30])})
-        if (not row.get("gene_name") or row.get("gene_name") == feature or row.get("gene_name", "").startswith("group_")) and match.get("gene"):
+
+    reference_confidence = "none"
+    if match is not None:
+        reference_confidence = confidence(identity or 0, coverage or 0, match_type)
+        if match_type == "product_exact" and reference_confidence == "none":
+            reference_confidence = "low"
+
+    reference_accepted = match is not None and reference_confidence in ("high", "medium", "low")
+    final_confidence = (
+        reference_confidence
+        if confidence_rank(reference_confidence) >= confidence_rank(native_confidence)
+        else native_confidence
+    )
+    common = {
+        "cluster_member_ids": ";".join(members[:30]),
+        "native_annotation_confidence": native_confidence,
+        "reference_rescue_confidence": reference_confidence if reference_accepted else "none",
+    }
+
+    if reference_accepted:
+        row.update({
+            **common,
+            "reference_locus_tag": match.get("locus_tag", ""),
+            "reference_gene": match.get("gene", ""),
+            "reference_product": match.get("product", ""),
+            "reference_location": match.get("location", ""),
+            "reference_match_type": match_type,
+            "reference_identity": identity,
+            "reference_coverage": coverage,
+            "annotation_confidence": final_confidence,
+            "annotation_basis": "native_plus_GenBank" if native_confidence != "none" else "GenBank_rescue",
+            "annotation_note": note,
+            "rejected_reference_locus_tag": "",
+            "rejected_reference_gene": "",
+            "rejected_reference_product": "",
+            "rejected_reference_match_type": "",
+            "rejected_reference_identity": "",
+            "rejected_reference_coverage": "",
+        })
+        if (not original_gene or original_gene == feature or original_gene.startswith("group_")) and match.get("gene"):
             row["gene_name"] = match.get("gene")
-        if (not row.get("product") or row.get("product", "").lower() in ("hypothetical protein", "unknown")) and match.get("product"):
+        if (not original_product or original_product.lower() in ("hypothetical protein", "unknown")) and match.get("product"):
             row["product"] = match.get("product")
-        row["annotation_source"] = row.get("annotation_source", annotation_source) + "+GenBank"
-
-    # Report display fields: keep the stable Panaroo cluster ID, but provide an interpretable display name.
-    # High-confidence matches can be shown as the reference gene; medium/low matches are marked as "-like".
-    conf = (row.get("annotation_confidence", "none") or "none").lower()
-    ref_gene = row.get("reference_gene", "") or ""
-    ref_locus = row.get("reference_locus_tag", "") or ""
-    ref_prod = row.get("reference_product", "") or ""
-    gene = row.get("gene_name", "") or ""
-    feat = feature or row.get("feature_id", "") or ""
-    identity_txt = row.get("reference_identity", "") or ""
-    coverage_txt = row.get("reference_coverage", "") or ""
-
-    if ref_gene and conf == "high":
-        display_name = ref_gene
-        interpretation = "High-confidence GenBank-supported annotation."
-    elif ref_gene and conf == "medium":
-        display_name = ref_gene + "-like"
-        interpretation = "Medium-confidence GenBank rescue; inspect manually before biological interpretation."
-    elif ref_gene and conf == "low":
-        display_name = ref_gene + "-like (" + feat + ")"
-        interpretation = "Low-confidence GenBank rescue; treat as tentative and keep the Panaroo cluster ID."
-    elif gene and gene != feat and not gene.startswith("group_"):
-        display_name = gene
-        interpretation = "Displayed from " + annotation_source + " annotation; no stronger GenBank rescue available."
-    elif ref_locus and conf in ("high", "medium", "low"):
-        suffix = "" if conf == "high" else "-like"
-        display_name = ref_locus + suffix + " (" + feat + ")"
-        interpretation = conf.capitalize() + "-confidence locus-level GenBank rescue."
+        if "+GenBank" not in row["annotation_source"]:
+            row["annotation_source"] += "+GenBank"
     else:
-        display_name = feat
-        interpretation = "No confident reference gene assignment; report the stable Panaroo cluster ID."
+        row.update({
+            **common,
+            "reference_locus_tag": "",
+            "reference_gene": "",
+            "reference_product": "",
+            "reference_location": "",
+            "reference_match_type": "none",
+            "reference_identity": "",
+            "reference_coverage": "",
+            "annotation_confidence": native_confidence,
+            "annotation_basis": "native_" + annotation_source.replace("/", "_"),
+            "annotation_note": (
+                native_confidence.capitalize() + "-confidence native " + annotation_source
+                + " annotation retained; the selected GenBank reference did not provide a qualifying rescue."
+                if native_confidence != "none" else
+                "No informative native annotation and no qualifying GenBank reference rescue."
+            ),
+            "rejected_reference_locus_tag": match.get("locus_tag", "") if match else "",
+            "rejected_reference_gene": match.get("gene", "") if match else "",
+            "rejected_reference_product": match.get("product", "") if match else "",
+            "rejected_reference_match_type": match_type if match else "none",
+            "rejected_reference_identity": identity,
+            "rejected_reference_coverage": coverage,
+        })
+
+    final_confidence = (row.get("annotation_confidence", "none") or "none").lower()
+    reference_gene = row.get("reference_gene", "") or ""
+    reference_locus = row.get("reference_locus_tag", "") or ""
+    reference_product = row.get("reference_product", "") or ""
+    native_gene = _native_display_gene(row.get("gene_name", ""), row.get("product", ""), feature)
+    native_product = _native_display_product(row.get("gene_name", ""), row.get("product", ""))
+
+    if reference_accepted and reference_gene and reference_confidence == "high":
+        display_name = reference_gene
+        interpretation = "High-confidence GenBank-supported annotation."
+    elif reference_accepted and reference_gene and reference_confidence == "medium":
+        display_name = reference_gene + "-like"
+        interpretation = "Medium-confidence GenBank rescue; inspect manually before biological interpretation."
+    elif reference_accepted and reference_gene and reference_confidence == "low":
+        display_name = reference_gene + "-like (" + feature + ")"
+        interpretation = "Low-confidence GenBank rescue; retain the stable Panaroo cluster identifier."
+    elif reference_accepted and reference_locus:
+        suffix = "" if reference_confidence == "high" else "-like"
+        display_name = reference_locus + suffix + " (" + feature + ")"
+        interpretation = reference_confidence.capitalize() + "-confidence locus-level GenBank rescue."
+    else:
+        display_name = native_gene or feature
+        interpretation = (
+            final_confidence.capitalize() + "-confidence native " + annotation_source
+            + " annotation. The selected GenBank reference did not contain a qualifying sequence-supported match; "
+            + "this does not invalidate a specific native call such as an acquired resistance gene."
+            if final_confidence != "none" else
+            "No informative native annotation and no qualifying GenBank rescue; retain the stable feature identifier."
+        )
 
     row["display_name"] = display_name
-    row["display_label"] = " | ".join([x for x in [feat, ref_locus or "no_reference_locus", conf + " confidence"] if x])
-    row["display_product"] = ref_prod or row.get("product", "") or ""
-    row["interpretation_note"] = interpretation
-    if identity_txt or coverage_txt:
-        row["annotation_evidence"] = "identity=" + str(identity_txt) + "; coverage=" + str(coverage_txt)
+    if reference_accepted:
+        label_parts = [
+            feature,
+            reference_locus or reference_gene or "GenBank_match",
+            final_confidence + " confidence",
+            "GenBank-supported",
+        ]
+        if identity or coverage:
+            label_parts.append("identity=" + str(identity or "NA") + "%")
+            label_parts.append("coverage=" + str(coverage or "NA") + "%")
     else:
-        row["annotation_evidence"] = "no sequence identity/coverage evidence available"
+        label_parts = [
+            feature,
+            "native " + annotation_source + " annotation",
+            final_confidence + " confidence",
+            "GenBank rescue not matched",
+        ]
+    row["display_label"] = " | ".join(label_parts)
+    row["display_product"] = reference_product if reference_accepted and reference_product else native_product
+    row["interpretation_note"] = interpretation
+
+    if reference_accepted and (identity or coverage):
+        row["annotation_evidence"] = (
+            "GenBank " + match_type + "; identity=" + str(identity or "NA")
+            + "; coverage=" + str(coverage or "NA")
+        )
+    elif reference_accepted:
+        row["annotation_evidence"] = "GenBank " + match_type + "; sequence identity/coverage not available"
+    elif native_confidence != "none":
+        row["annotation_evidence"] = (
+            "native_gene=" + str(native_gene or "NA")
+            + "; native_product=" + str(native_product or "NA")
+            + "; GenBank_rescue=not_matched"
+        )
+    elif match is not None:
+        row["annotation_evidence"] = (
+            "rejected GenBank candidate; identity=" + str(identity or "NA")
+            + "; coverage=" + str(coverage or "NA")
+        )
+    else:
+        row["annotation_evidence"] = "no informative native annotation or sequence-supported GenBank rescue"
     return row
 
-extra_fields = ["display_name", "display_label", "display_product", "interpretation_note", "annotation_evidence", "reference_locus_tag", "reference_gene", "reference_product", "reference_location", "reference_match_type", "reference_identity", "reference_coverage", "annotation_confidence", "annotation_note", "cluster_member_ids"]
-for in_path, out_path in [("~{top_priority_hits}", prefix + "_top_priority_hits.annotated.tsv"), ("~{all_significant_hits}", prefix + "_all_significant_hits.annotated.tsv")]:
+
+extra_fields = [
+    "display_name", "display_label", "display_product", "interpretation_note", "annotation_evidence",
+    "native_annotation_confidence", "reference_rescue_confidence", "annotation_basis",
+    "reference_locus_tag", "reference_gene", "reference_product", "reference_location",
+    "reference_match_type", "reference_identity", "reference_coverage", "annotation_confidence", "annotation_note",
+    "rejected_reference_locus_tag", "rejected_reference_gene", "rejected_reference_product",
+    "rejected_reference_match_type", "rejected_reference_identity", "rejected_reference_coverage",
+    "cluster_member_ids"
+]
+annotated_sets = {}
+for label, in_path, out_path in [
+    ("top", "~{top_priority_hits}", prefix + "_top_priority_hits.annotated.tsv"),
+    ("all", "~{all_significant_hits}", prefix + "_all_significant_hits.annotated.tsv"),
+]:
     fields, rows = read_tsv_dict(in_path)
     if not fields:
         fields = ["rank", "feature_id", "feature_type", "gene_name", "product"]
         rows = []
-    out_fields = fields + [f for f in extra_fields if f not in fields]
-    write_tsv(out_path, out_fields, [annotate_row(dict(r)) for r in rows])
+    annotated_rows = [annotate_row(dict(row)) for row in rows]
+    annotated_sets[label] = annotated_rows
+    out_fields = fields + [field for field in extra_fields if field not in fields]
+    write_tsv(out_path, out_fields, annotated_rows)
+
+all_annotated = annotated_sets.get("all", [])
+final_confidence_counts = {
+    confidence_label: sum(1 for row in all_annotated if (row.get("annotation_confidence", "none") or "none").lower() == confidence_label)
+    for confidence_label in ("high", "medium", "low", "none")
+}
+reference_rescue_counts = {
+    confidence_label: sum(1 for row in all_annotated if (row.get("reference_rescue_confidence", "none") or "none").lower() == confidence_label)
+    for confidence_label in ("high", "medium", "low", "none")
+}
 
 with open(prefix + "_reference_annotation_summary.tsv", "w") as out:
     out.write("metric\tvalue\n")
     out.write(f"reference_cds_parsed\t{len(refs)}\n")
+    out.write(f"reference_records_seen\t{reference_metrics.get('records_seen', 0)}\n")
+    out.write(f"reference_records_with_features\t{reference_metrics.get('records_with_features', 0)}\n")
+    out.write(f"reference_records_with_origin\t{reference_metrics.get('records_with_origin', 0)}\n")
+    out.write(f"reference_total_origin_bp\t{reference_metrics.get('total_origin_bp', 0)}\n")
     out.write(f"reference_parse_warning\t{reference_parse_warning}\n")
     out.write(f"panaroo_clusters_parsed\t{len(panaroo_rows)}\n")
     out.write(f"annotation_engine\t{annotation_source}\n")
     out.write(f"fasta_records_parsed\t{len(fasta_records)}\n")
     out.write(f"top_priority_input\t{Path('~{top_priority_hits}').name}\n")
     out.write(f"all_significant_input\t{Path('~{all_significant_hits}').name}\n")
-    out.write("method\tGenBank qualifier matching plus pure-Python nucleotide similarity rescue when Panaroo representative sequences are available\n")
+    out.write(f"final_high_confidence_hits\t{final_confidence_counts['high']}\n")
+    out.write(f"final_medium_confidence_hits\t{final_confidence_counts['medium']}\n")
+    out.write(f"final_low_confidence_hits\t{final_confidence_counts['low']}\n")
+    out.write(f"final_none_confidence_hits\t{final_confidence_counts['none']}\n")
+    out.write(f"GenBank_high_confidence_rescues\t{reference_rescue_counts['high']}\n")
+    out.write(f"GenBank_medium_confidence_rescues\t{reference_rescue_counts['medium']}\n")
+    out.write(f"GenBank_low_confidence_rescues\t{reference_rescue_counts['low']}\n")
+    out.write(f"GenBank_unmatched_or_rejected\t{reference_rescue_counts['none']}\n")
+    out.write("confidence_model\tFinal confidence combines native Panaroo/Bakta or Panaroo/Prokka annotation confidence with independent GenBank rescue confidence.\n")
+    out.write("method\tNative annotation assessment plus GenBank qualifier matching and pure-Python nucleotide similarity rescue when representative sequences are available\n")
 PY
   >>>
 
@@ -2113,37 +2487,55 @@ export PATH=/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
 python <<'PY'
 from pathlib import Path
 import re, math, html
+
 prefix = "~{output_prefix}"
 plot_label = "~{plot_label}"
 alpha = float("~{significance_alpha}")
-max_points = int("~{max_points}")
+max_points = max(100, int("~{max_points}"))
 assoc = Path("~{pyseer_gene_assoc}")
 
-def parse_float(x):
+
+def parse_float(value):
     try:
-        if x is None or str(x).strip() in ("", "NA", "nan", "None"):
+        if value is None or str(value).strip() in ("", "NA", "nan", "None", "."):
             return None
-        v = float(x)
-        if v <= 0 or v > 1 or math.isnan(v):
+        number = float(value)
+        if not (0 < number <= 1) or math.isnan(number):
             return None
-        return v
+        return number
     except Exception:
         return None
 
+
 def pick(row, names):
-    lower = {k.lower(): k for k in row}
-    for n in names:
-        if n in row:
-            return row[n]
-        if n.lower() in lower:
-            return row[lower[n.lower()]]
+    lower = {str(k).lower(): k for k in row}
+    for name in names:
+        if name in row:
+            return row[name]
+        if name.lower() in lower:
+            return row[lower[name.lower()]]
     return ""
+
+
+def bh_adjust(pvalues):
+    m = len(pvalues)
+    if m == 0:
+        return []
+    order = sorted(range(m), key=lambda i: pvalues[i])
+    adjusted = [1.0] * m
+    running = 1.0
+    for reverse_rank, index in enumerate(reversed(order), start=1):
+        rank = m - reverse_rank + 1
+        running = min(running, min(1.0, pvalues[index] * m / rank))
+        adjusted[index] = running
+    return adjusted
+
 
 rows = []
 with assoc.open(errors="replace") as fh:
     first = fh.readline().rstrip("\n")
     header = re.split(r"\t|\s+", first.strip()) if first else []
-    for line in fh:
+    for source_index, line in enumerate(fh, start=1):
         if not line.strip() or line.startswith("#"):
             continue
         parts = re.split(r"\t|\s+", line.strip())
@@ -2151,121 +2543,201 @@ with assoc.open(errors="replace") as fh:
             parts += [""] * (len(header) - len(parts))
         row = dict(zip(header, parts)) if header else {}
         feature = pick(row, ["variant", "gene", "feature", "samples", "name"]) or (parts[0] if parts else "")
-        p = parse_float(pick(row, ["lrt-pvalue", "lrt_pvalue", "pvalue", "p-value", "filter-pvalue", "p"]))
-        if p is not None:
-            rows.append((feature, p))
+        pvalue = parse_float(pick(row, ["lrt-pvalue", "lrt_pvalue", "pvalue", "p-value", "filter-pvalue", "p"]))
+        if pvalue is not None:
+            rows.append({"feature": feature, "p": pvalue, "index": source_index})
 
-rows_sorted = sorted(rows, key=lambda x: x[1])
+qvalues = bh_adjust([row["p"] for row in rows])
+for row, qvalue in zip(rows, qvalues):
+    row["q"] = qvalue
+
+m = len(rows)
+bonferroni_threshold = alpha / m if m else 0.0
+fdr_rows = [row for row in rows if row["q"] <= alpha]
+nominal_rows = [row for row in rows if row["p"] <= alpha]
+bonferroni_rows = [row for row in rows if m and row["p"] <= bonferroni_threshold]
+fdr_p_cutoff = max((row["p"] for row in fdr_rows), default=0.0)
+rows_by_p = sorted(rows, key=lambda row: row["p"])
+
+# Preserve the strongest points and sample the remaining feature order.
 if len(rows) > max_points:
-    keep = rows_sorted[:min(500, len(rows_sorted))]
-    remaining = rows_sorted[min(500, len(rows_sorted)):]
-    step = max(1, len(remaining) // max(1, max_points-len(keep)))
-    keep.extend(remaining[::step])
-    draw_rows = keep[:max_points]
+    strongest = rows_by_p[:min(500, len(rows_by_p))]
+    strongest_ids = {id(row) for row in strongest}
+    remainder = [row for row in rows if id(row) not in strongest_ids]
+    remaining_slots = max(1, max_points - len(strongest))
+    step = max(1, len(remainder) // remaining_slots)
+    draw_rows = strongest + remainder[::step]
+    draw_rows = draw_rows[:max_points]
 else:
-    draw_rows = rows
+    draw_rows = list(rows)
+draw_rows.sort(key=lambda row: row["index"])
 
-def svg_escape(x): return html.escape(str(x), quote=True)
 
-def make_svg_points_plot(points, title, xlabel, ylabel, path, line=False):
+def svg_escape(value):
+    return html.escape(str(value), quote=True)
+
+
+def point_color(row):
+    if m and row["p"] <= bonferroni_threshold:
+        return "#55efc4"
+    if row["q"] <= alpha:
+        return "#ff7ab6"
+    if row["p"] <= alpha:
+        return "#ffd166"
+    return "#21d4fd"
+
+
+def make_manhattan(path):
     width, height = 980, 520
     ml, mr, mt, mb = 74, 26, 58, 68
-    pw, ph = width - ml - mr, height - mt - mb
-    if not points:
-        body = f'<text x="{width/2}" y="{height/2}" fill="#9fb3c8" text-anchor="middle">No p-values available</text>'
+    plot_width, plot_height = width - ml - mr, height - mt - mb
+    if not draw_rows:
+        body = f'<text x="{width/2}" y="{height/2}" fill="#9fb3c8" text-anchor="middle">No valid p-values available</text>'
     else:
-        xs = [p[0] for p in points]
-        ys = [p[1] for p in points]
-        xmin, xmax = min(xs), max(xs)
-        ymin, ymax = 0, max(max(ys), 1.0)
-        if xmax == xmin: xmax = xmin + 1
-        def sx(x): return ml + (x - xmin) / (xmax - xmin) * pw
-        def sy(y): return mt + ph - (y - ymin) / (ymax - ymin) * ph
-        body_parts = []
-        for i in range(6):
-            y = mt + i * ph / 5
-            val = ymax - i * ymax / 5
-            body_parts.append(f'<line x1="{ml}" y1="{y:.1f}" x2="{ml+pw}" y2="{y:.1f}" stroke="rgba(180,210,255,0.18)"/>')
-            body_parts.append(f'<text x="{ml-10}" y="{y+4:.1f}" fill="#9fb3c8" text-anchor="end" font-size="12">{val:.1f}</text>')
-        body_parts.append(f'<line x1="{ml}" y1="{mt+ph}" x2="{ml+pw}" y2="{mt+ph}" stroke="#8ecaff"/>')
-        body_parts.append(f'<line x1="{ml}" y1="{mt}" x2="{ml}" y2="{mt+ph}" stroke="#8ecaff"/>')
-        sig_y = -math.log10(alpha) if alpha > 0 else None
-        if line and points:
-            lim = min(max(xs), max(ys))
-            if lim > 0:
-                body_parts.append(f'<line x1="{sx(0):.1f}" y1="{sy(0):.1f}" x2="{sx(lim):.1f}" y2="{sy(lim):.1f}" stroke="rgba(255,255,255,0.35)" stroke-width="2"/>')
-        if sig_y and sig_y <= ymax:
-            body_parts.append(f'<line x1="{ml}" y1="{sy(sig_y):.1f}" x2="{ml+pw}" y2="{sy(sig_y):.1f}" stroke="#ff7ab6" stroke-width="2" stroke-dasharray="8 8"/>')
-            body_parts.append(f'<text x="{ml+pw-4}" y="{sy(sig_y)-8:.1f}" fill="#ffb3d9" text-anchor="end" font-size="12">alpha={alpha:g}</text>')
-        for x,y in points:
-            color = "#ff7ab6" if sig_y and y >= sig_y else "#21d4fd"
-            body_parts.append(f'<circle cx="{sx(x):.1f}" cy="{sy(y):.1f}" r="3.2" fill="{color}" opacity="0.75"/>')
-        body = "\n".join(body_parts)
-    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="{svg_escape(title)}">
+        max_y = max(max(-math.log10(row["p"]) for row in draw_rows), 1.0)
+        min_x, max_x = 1, max(2, len(rows))
+        def sx(value):
+            return ml + (value - min_x) / (max_x - min_x) * plot_width
+        def sy(value):
+            return mt + plot_height - value / max_y * plot_height
+        parts = []
+        for grid_index in range(6):
+            y = mt + grid_index * plot_height / 5
+            value = max_y - grid_index * max_y / 5
+            parts.append(f'<line x1="{ml}" y1="{y:.1f}" x2="{ml+plot_width}" y2="{y:.1f}" stroke="rgba(180,210,255,0.18)"/>')
+            parts.append(f'<text x="{ml-10}" y="{y+4:.1f}" fill="#9fb3c8" text-anchor="end" font-size="12">{value:.1f}</text>')
+        parts.append(f'<line x1="{ml}" y1="{mt+plot_height}" x2="{ml+plot_width}" y2="{mt+plot_height}" stroke="#8ecaff"/>')
+        parts.append(f'<line x1="{ml}" y1="{mt}" x2="{ml}" y2="{mt+plot_height}" stroke="#8ecaff"/>')
+
+        thresholds = []
+        if alpha > 0:
+            thresholds.append((alpha, "nominal p", "#ffd166", "4 8"))
+        if fdr_p_cutoff > 0:
+            thresholds.append((fdr_p_cutoff, "BH FDR q≤" + f"{alpha:g}", "#ff7ab6", "8 8"))
+        if bonferroni_threshold > 0:
+            thresholds.append((bonferroni_threshold, "Bonferroni", "#55efc4", "12 6"))
+        used_y = []
+        for threshold, label, color, dash in thresholds:
+            y_value = -math.log10(threshold)
+            if y_value <= max_y:
+                y_position = sy(y_value)
+                parts.append(f'<line x1="{ml}" y1="{y_position:.1f}" x2="{ml+plot_width}" y2="{y_position:.1f}" stroke="{color}" stroke-width="2" stroke-dasharray="{dash}"/>')
+                label_offset = 12 * sum(abs(y_position - prior) < 18 for prior in used_y)
+                used_y.append(y_position)
+                parts.append(f'<text x="{ml+plot_width-4}" y="{y_position-7-label_offset:.1f}" fill="{color}" text-anchor="end" font-size="11">{svg_escape(label)}</text>')
+
+        for row in draw_rows:
+            y_value = -math.log10(row["p"])
+            parts.append(
+                f'<circle cx="{sx(row["index"]):.1f}" cy="{sy(y_value):.1f}" r="3.2" '
+                f'fill="{point_color(row)}" opacity="0.78"><title>{svg_escape(row["feature"])}; '
+                f'p={row["p"]:.4g}; q={row["q"]:.4g}</title></circle>'
+            )
+        body = "\n".join(parts)
+
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="{svg_escape(plot_label)} Manhattan-style association plot">
 <rect width="100%" height="100%" rx="18" fill="#071226"/>
-<text x="{ml}" y="34" fill="#eef6ff" font-family="Arial" font-size="22" font-weight="700">{svg_escape(title)}</text>
+<text x="{ml}" y="34" fill="#eef6ff" font-family="Arial" font-size="22" font-weight="700">{svg_escape(plot_label)} Manhattan-style association plot</text>
 {body}
-<text x="{width/2}" y="{height-18}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle">{svg_escape(xlabel)}</text>
-<text x="20" y="{height/2}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle" transform="rotate(-90 20 {height/2})">{svg_escape(ylabel)}</text>
-</svg>"""
+<text x="{width/2}" y="{height-18}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle">Feature index</text>
+<text x="20" y="{height/2}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle" transform="rotate(-90 20 {height/2})">-log10(p-value)</text>
+</svg>'''
     Path(path).write_text(svg)
 
-manhattan_points = [(i+1, -math.log10(p)) for i, (_, p) in enumerate(draw_rows)]
-make_svg_points_plot(manhattan_points, plot_label + " Manhattan-style association plot", "Feature index", "-log10(p-value)", prefix + "_manhattan.svg")
 
-n = len(rows_sorted)
-qq = []
-if n:
-    observed = sorted([-math.log10(p) for _, p in rows_sorted])
-    expected = sorted([-math.log10((i + 0.5) / n) for i in range(n)])
-    qq = list(zip(expected, observed))
-    if len(qq) > max_points:
-        step = max(1, len(qq)//max_points)
-        qq = qq[::step]
-make_svg_points_plot(qq, plot_label + " QQ plot", "Expected -log10(p-value)", "Observed -log10(p-value)", prefix + "_qq.svg", line=True)
+def make_qq(path):
+    width, height = 980, 520
+    ml, mr, mt, mb = 74, 26, 58, 68
+    plot_width, plot_height = width - ml - mr, height - mt - mb
+    observed = sorted([-math.log10(row["p"]) for row in rows])
+    expected = sorted([-math.log10((index + 0.5) / len(rows)) for index in range(len(rows))]) if rows else []
+    points = list(zip(expected, observed))
+    if len(points) > max_points:
+        step = max(1, len(points) // max_points)
+        points = points[::step]
+    if not points:
+        body = f'<text x="{width/2}" y="{height/2}" fill="#9fb3c8" text-anchor="middle">No valid p-values available</text>'
+    else:
+        maximum = max(max(x for x, _ in points), max(y for _, y in points), 1.0)
+        def sx(value): return ml + value / maximum * plot_width
+        def sy(value): return mt + plot_height - value / maximum * plot_height
+        parts = [
+            f'<line x1="{ml}" y1="{mt+plot_height}" x2="{ml+plot_width}" y2="{mt}" stroke="rgba(255,255,255,0.38)" stroke-width="2"/>'
+        ]
+        for x_value, y_value in points:
+            parts.append(f'<circle cx="{sx(x_value):.1f}" cy="{sy(y_value):.1f}" r="3.0" fill="#21d4fd" opacity="0.76"/>')
+        body = "\n".join(parts)
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="{svg_escape(plot_label)} QQ plot">
+<rect width="100%" height="100%" rx="18" fill="#071226"/>
+<text x="{ml}" y="34" fill="#eef6ff" font-family="Arial" font-size="22" font-weight="700">{svg_escape(plot_label)} QQ plot</text>
+{body}
+<text x="{width/2}" y="{height-18}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle">Expected -log10(p-value)</text>
+<text x="20" y="{height/2}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle" transform="rotate(-90 20 {height/2})">Observed -log10(p-value)</text>
+</svg>'''
+    Path(path).write_text(svg)
 
-sig_count = sum(1 for _, p in rows if p <= alpha)
-top_feature = rows_sorted[0][0] if rows_sorted else "NA"
-top_p = rows_sorted[0][1] if rows_sorted else None
-top_logp = -math.log10(top_p) if top_p else 0.0
+
+make_manhattan(prefix + "_manhattan.svg")
+make_qq(prefix + "_qq.svg")
+
+top_feature = rows_by_p[0]["feature"] if rows_by_p else "NA"
+top_pvalue = rows_by_p[0]["p"] if rows_by_p else None
+top_qvalue = rows_by_p[0]["q"] if rows_by_p else None
+top_logp = -math.log10(top_pvalue) if top_pvalue else 0.0
+
 if rows:
-    observed_full = sorted([-math.log10(p) for _, p in rows_sorted])
-    expected_full = sorted([-math.log10((i + 0.5) / len(rows_sorted)) for i in range(len(rows_sorted))])
-    mid = len(observed_full) // 2
-    median_delta = observed_full[mid] - expected_full[mid]
+    observed_full = sorted([-math.log10(row["p"]) for row in rows])
+    expected_full = sorted([-math.log10((index + 0.5) / len(rows)) for index in range(len(rows))])
+    midpoint = len(rows) // 2
+    median_delta = observed_full[midpoint] - expected_full[midpoint]
     tail_delta = observed_full[-1] - expected_full[-1]
 else:
     median_delta = 0.0
     tail_delta = 0.0
 
 if not rows:
-    manhattan_layman = "No valid gene p-values were available, so the gene Manhattan-style plot cannot be interpreted for this run."
-elif sig_count == 0:
-    manhattan_layman = f"Each dot is a gene or gene cluster. Taller dots mean stronger evidence of difference between the two groups. In this run, none of the {len(rows)} tested gene features crossed the alpha={alpha:g} line, so there is no strong gene presence/absence signal at this threshold. This can happen with small cohorts, weak phenotype separation, or true absence of strong gene-level associations."
-elif sig_count == 1:
-    manhattan_layman = f"Each dot is a gene or gene cluster. Taller dots mean stronger evidence of difference between the two groups. In this run, 1 of {len(rows)} tested gene features crossed the alpha={alpha:g} line. The tallest signal was {top_feature} (p={top_p:.3g}), which should be treated as a candidate association, not proof of causation. Check the priority table, annotation confidence, and population structure before making a biological claim."
+    manhattan_layman = "No valid gene p-values were available, so the gene association plot cannot be interpreted for this run."
+elif not fdr_rows:
+    manhattan_layman = (
+        f"The plot contains {len(rows)} tested gene features. No feature passed Benjamini-Hochberg FDR q≤{alpha:g}. "
+        f"There were {len(nominal_rows)} nominal p≤{alpha:g} features, but these are not labelled statistically significant after multiple-testing correction."
+    )
 else:
-    manhattan_layman = f"Each dot is a gene or gene cluster. Taller dots mean stronger evidence of difference between the two groups. In this run, {sig_count} of {len(rows)} tested gene features crossed the alpha={alpha:g} line. The tallest signal was {top_feature} (p={top_p:.3g}). Multiple significant dots may represent linked genes, mobile elements, or lineage effects, so review the priority table and population structure before interpreting them as independent causal markers."
+    manhattan_layman = (
+        f"The plot contains {len(rows)} tested gene features. {len(fdr_rows)} passed Benjamini-Hochberg FDR q≤{alpha:g}, "
+        f"and {len(bonferroni_rows)} also passed the Bonferroni threshold ({bonferroni_threshold:.3g}). "
+        f"The strongest feature was {top_feature} (p={top_pvalue:.3g}; q={top_qvalue:.3g}). "
+        "Linked genes, mobile elements, and lineage effects can create groups of correlated signals, so review population structure and annotation support."
+    )
 
 if not rows:
-    qq_layman = "No valid gene p-values were available, so the QQ plot cannot be interpreted for this run."
-elif sig_count == 0 and tail_delta < 0.5 and abs(median_delta) < 0.35:
-    qq_layman = "The QQ plot compares observed p-values with what would be expected if there were no real association signal. The points do not show a strong upward tail, which supports the interpretation that this run has no clear gene-level association at the chosen threshold."
+    qq_layman = "No valid gene p-values were available, so the QQ plot cannot be interpreted."
 elif median_delta > 0.35:
-    qq_layman = f"The QQ plot shows broad upward deviation from the expected pattern (median observed minus expected -log10 p-value approximately {median_delta:.2f}). This can mean true widespread signal, but in microbial GWAS it often suggests inflation from lineage, outbreak clustering, related samples, or phenotype imbalance. Review the PCoA/kinship plots and consider stricter filtering or lineage-aware analysis."
-elif tail_delta > 0.5 and sig_count > 0:
-    qq_layman = "Most QQ-plot points are close to the expected background, but the upper tail rises above expectation. That pattern is consistent with a small number of candidate gene associations rather than general inflation. The candidate signals should still be checked against population structure and annotation confidence."
+    qq_layman = (
+        f"The QQ plot shows broad upward deviation from the null expectation (median delta {median_delta:.2f}). "
+        "In microbial GWAS this can indicate lineage, outbreak clustering, relatedness, phenotype imbalance, or widespread true signal."
+    )
+elif tail_delta > 0.5 and fdr_rows:
+    qq_layman = "Most QQ-plot points follow the expected background, with an elevated upper tail containing FDR-supported candidates. Review those candidates with population structure and annotation confidence."
 else:
-    qq_layman = "The QQ plot does not show strong genome-wide inflation. Any outlying points should still be interpreted cautiously together with sample size, phenotype coding, and population-structure checks."
+    qq_layman = "The QQ plot does not show strong broad inflation. Outlying features should still be interpreted with cohort size, phenotype coding, and population structure."
 
 with open(prefix + "_plot_summary.tsv", "w") as out:
     out.write("metric\tvalue\n")
     out.write(f"pvalues_detected\t{len(rows)}\n")
     out.write(f"points_drawn\t{len(draw_rows)}\n")
     out.write(f"plot_label\t{plot_label}\n")
-    out.write(f"significant_points_at_alpha\t{sig_count}\n")
+    out.write("multiple_testing_method\tBenjamini-Hochberg FDR and Bonferroni\n")
+    out.write(f"family_alpha\t{alpha}\n")
+    out.write(f"nominal_significant_points\t{len(nominal_rows)}\n")
+    out.write(f"fdr_significant_points\t{len(fdr_rows)}\n")
+    out.write(f"bonferroni_significant_points\t{len(bonferroni_rows)}\n")
+    out.write(f"significant_points_at_alpha\t{len(fdr_rows)}\n")
+    out.write(f"fdr_equivalent_pvalue_cutoff\t{fdr_p_cutoff if fdr_p_cutoff else 'NA'}\n")
+    out.write(f"bonferroni_pvalue_threshold\t{bonferroni_threshold if m else 'NA'}\n")
     out.write(f"top_feature\t{top_feature}\n")
-    out.write(f"top_pvalue\t{top_p if top_p is not None else 'NA'}\n")
+    out.write(f"top_pvalue\t{top_pvalue if top_pvalue is not None else 'NA'}\n")
+    out.write(f"top_qvalue\t{top_qvalue if top_qvalue is not None else 'NA'}\n")
     out.write(f"top_minus_log10_pvalue\t{top_logp:.4f}\n")
     out.write(f"qq_median_delta_observed_minus_expected\t{median_delta:.4f}\n")
     out.write(f"qq_tail_delta_observed_minus_expected\t{tail_delta:.4f}\n")
@@ -2306,55 +2778,74 @@ export PATH=/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
 python <<'PY'
 from pathlib import Path
 import re, math, html
+
 prefix = "~{output_prefix}"
 alpha = float("~{significance_alpha}")
-max_points = int("~{max_points}")
-assoc = Path("~{pyseer_snp_assoc}")
-vcf = Path("~{snp_vcf}")
+max_points = max(100, int("~{max_points}"))
+assoc_path = Path("~{pyseer_snp_assoc}")
+vcf_path = Path("~{snp_vcf}")
 
-def parse_float(x):
+
+def parse_float(value):
     try:
-        if x is None or str(x).strip() in ("", "NA", "nan", "None"):
+        if value is None or str(value).strip() in ("", "NA", "nan", "None", "."):
             return None
-        v = float(x)
-        if v <= 0 or v > 1 or math.isnan(v):
+        number = float(value)
+        if not (0 < number <= 1) or math.isnan(number):
             return None
-        return v
+        return number
     except Exception:
         return None
 
+
 def pick(row, names):
-    lower = {k.lower(): k for k in row}
-    for n in names:
-        if n in row:
-            return row[n]
-        if n.lower() in lower:
-            return row[lower[n.lower()]]
+    lower = {str(k).lower(): k for k in row}
+    for name in names:
+        if name in row:
+            return row[name]
+        if name.lower() in lower:
+            return row[lower[name.lower()]]
     return ""
 
-coord = {}
-with vcf.open(errors="replace") as fh:
+
+def bh_adjust(pvalues):
+    m = len(pvalues)
+    if m == 0:
+        return []
+    order = sorted(range(m), key=lambda i: pvalues[i])
+    adjusted = [1.0] * m
+    running = 1.0
+    for reverse_rank, index in enumerate(reversed(order), start=1):
+        rank = m - reverse_rank + 1
+        running = min(running, min(1.0, pvalues[index] * m / rank))
+        adjusted[index] = running
+    return adjusted
+
+
+# Coordinate aliases from VCF.
+coordinate_map = {}
+with vcf_path.open(errors="replace") as fh:
     for line in fh:
         if line.startswith("#") or not line.strip():
             continue
         parts = line.rstrip("\n").split("\t")
         if len(parts) < 5:
             continue
-        chrom, pos, vid, ref, alt = parts[:5]
-        marker_id = vid if vid not in ("", ".") else f"{chrom}_{pos}_{ref}_{alt}"
-        try:
-            p = int(pos)
-        except Exception:
-            p = None
-        rec = (chrom, p, marker_id)
-        for key in {marker_id, f"{chrom}_{pos}", f"{chrom}:{pos}", str(pos), f"{pos}_{ref}_{alt}"}:
-            coord[key] = rec
+        chrom, position, variant_id, ref, alt = parts[:5]
+        canonical = variant_id if variant_id not in ("", ".") else f"{chrom}_{position}_{ref}_{alt}"
+        record = (chrom, int(position), canonical)
+        aliases = {
+            canonical, f"{chrom}_{position}", f"{chrom}:{position}",
+            f"{chrom}_{position}_{ref}_{alt}", str(position), f"{position}_{ref}_{alt}"
+        }
+        for alias in aliases:
+            coordinate_map[alias] = record
 
 rows = []
-with assoc.open(errors="replace") as fh:
+with assoc_path.open(errors="replace") as fh:
     first = fh.readline().rstrip("\n")
     header = re.split(r"\t|\s+", first.strip()) if first else []
-    for line in fh:
+    for source_index, line in enumerate(fh, start=1):
         if not line.strip() or line.startswith("#"):
             continue
         parts = re.split(r"\t|\s+", line.strip())
@@ -2362,143 +2853,226 @@ with assoc.open(errors="replace") as fh:
             parts += [""] * (len(header) - len(parts))
         row = dict(zip(header, parts)) if header else {}
         feature = pick(row, ["variant", "feature", "name"]) or (parts[0] if parts else "")
-        pval = parse_float(pick(row, ["lrt-pvalue", "lrt_pvalue", "pvalue", "p-value", "filter-pvalue", "p"]))
-        if pval is None:
+        pvalue = parse_float(pick(row, ["lrt-pvalue", "lrt_pvalue", "pvalue", "p-value", "filter-pvalue", "p"]))
+        if pvalue is None:
             continue
-        chrom, pos, marker = coord.get(feature, ("", None, feature))
-        if pos is None:
-            nums = re.findall(r"\d+", feature)
-            pos = int(nums[0]) if nums else len(rows) + 1
-        rows.append({"feature": feature, "chrom": chrom, "position": pos, "p": pval})
+        chrom, position, canonical = coordinate_map.get(feature, ("", None, feature))
+        if position is None:
+            numbers = re.findall(r"\d+", feature)
+            position = int(numbers[0]) if numbers else source_index
+        rows.append({
+            "feature": canonical or feature,
+            "chrom": chrom,
+            "position": position,
+            "p": pvalue,
+            "source_index": source_index,
+        })
 
-rows_sorted = sorted(rows, key=lambda r: (r["chrom"] or "zz_unknown", r["position"]))
-if len(rows_sorted) > max_points:
-    by_p = sorted(rows_sorted, key=lambda r: r["p"])
-    keep_ids = {id(r) for r in by_p[:min(500, len(by_p))]}
-    remaining = [r for r in rows_sorted if id(r) not in keep_ids]
-    step = max(1, len(remaining) // max(1, max_points - len(keep_ids)))
-    draw_rows = by_p[:min(500, len(by_p))] + remaining[::step]
+qvalues = bh_adjust([row["p"] for row in rows])
+for row, qvalue in zip(rows, qvalues):
+    row["q"] = qvalue
+
+m = len(rows)
+bonferroni_threshold = alpha / m if m else 0.0
+fdr_rows = [row for row in rows if row["q"] <= alpha]
+nominal_rows = [row for row in rows if row["p"] <= alpha]
+bonferroni_rows = [row for row in rows if m and row["p"] <= bonferroni_threshold]
+fdr_p_cutoff = max((row["p"] for row in fdr_rows), default=0.0)
+rows_by_p = sorted(rows, key=lambda row: row["p"])
+rows_by_coordinate = sorted(rows, key=lambda row: (row["chrom"] or "zz_unknown", row["position"], row["source_index"]))
+
+# Retain strongest SNPs and sample the rest by coordinate order.
+if len(rows_by_coordinate) > max_points:
+    strongest = rows_by_p[:min(500, len(rows_by_p))]
+    strongest_ids = {id(row) for row in strongest}
+    remainder = [row for row in rows_by_coordinate if id(row) not in strongest_ids]
+    remaining_slots = max(1, max_points - len(strongest))
+    step = max(1, len(remainder) // remaining_slots)
+    draw_rows = strongest + remainder[::step]
     draw_rows = draw_rows[:max_points]
 else:
-    draw_rows = rows_sorted
+    draw_rows = list(rows_by_coordinate)
 
+chromosomes = sorted({row["chrom"] or "unknown" for row in rows_by_coordinate})
 offsets = {}
 current = 0
-for chrom in [] if not rows_sorted else sorted({r["chrom"] or "unknown" for r in rows_sorted}):
-    positions = [r["position"] for r in rows_sorted if (r["chrom"] or "unknown") == chrom]
+for chrom in chromosomes:
+    positions = [row["position"] for row in rows_by_coordinate if (row["chrom"] or "unknown") == chrom]
     offsets[chrom] = current
     current += (max(positions) if positions else 0) + 1
 
-def svg_escape(x): return html.escape(str(x), quote=True)
 
-def make_svg_points_plot(points, title, xlabel, ylabel, path, draw_diag=False):
+def svg_escape(value):
+    return html.escape(str(value), quote=True)
+
+
+def point_color(row):
+    if m and row["p"] <= bonferroni_threshold:
+        return "#55efc4"
+    if row["q"] <= alpha:
+        return "#ff7ab6"
+    if row["p"] <= alpha:
+        return "#ffd166"
+    return "#21d4fd"
+
+
+def make_manhattan(path):
     width, height = 980, 520
     ml, mr, mt, mb = 74, 26, 58, 68
-    pw, ph = width - ml - mr, height - mt - mb
-    if not points:
-        body = f'<text x="{width/2}" y="{height/2}" fill="#9fb3c8" text-anchor="middle">No SNP p-values available</text>'
+    plot_width, plot_height = width - ml - mr, height - mt - mb
+    if not draw_rows:
+        body = f'<text x="{width/2}" y="{height/2}" fill="#9fb3c8" text-anchor="middle">No valid SNP p-values available</text>'
     else:
-        xs = [p[0] for p in points]
-        ys = [p[1] for p in points]
-        xmin, xmax = min(xs), max(xs)
-        ymin, ymax = 0, max(max(ys), 1.0)
-        if xmax == xmin: xmax = xmin + 1
-        def sx(x): return ml + (x - xmin) / (xmax - xmin) * pw
-        def sy(y): return mt + ph - (y - ymin) / (ymax - ymin) * ph
-        body_parts = []
-        for i in range(6):
-            y = mt + i * ph / 5
-            val = ymax - i * ymax / 5
-            body_parts.append(f'<line x1="{ml}" y1="{y:.1f}" x2="{ml+pw}" y2="{y:.1f}" stroke="rgba(180,210,255,0.18)"/>')
-            body_parts.append(f'<text x="{ml-10}" y="{y+4:.1f}" fill="#9fb3c8" text-anchor="end" font-size="12">{val:.1f}</text>')
-        body_parts.append(f'<line x1="{ml}" y1="{mt+ph}" x2="{ml+pw}" y2="{mt+ph}" stroke="#8ecaff"/>')
-        body_parts.append(f'<line x1="{ml}" y1="{mt}" x2="{ml}" y2="{mt+ph}" stroke="#8ecaff"/>')
-        if draw_diag:
-            lim = min(max(xs), max(ys))
-            body_parts.append(f'<line x1="{sx(0):.1f}" y1="{sy(0):.1f}" x2="{sx(lim):.1f}" y2="{sy(lim):.1f}" stroke="rgba(255,255,255,0.35)" stroke-width="2"/>')
-        sig_y = -math.log10(alpha) if alpha > 0 else None
-        if sig_y and sig_y <= ymax:
-            body_parts.append(f'<line x1="{ml}" y1="{sy(sig_y):.1f}" x2="{ml+pw}" y2="{sy(sig_y):.1f}" stroke="#ff7ab6" stroke-width="2" stroke-dasharray="8 8"/>')
-            body_parts.append(f'<text x="{ml+pw-4}" y="{sy(sig_y)-8:.1f}" fill="#ffb3d9" text-anchor="end" font-size="12">alpha={alpha:g}</text>')
-        for x, y in points:
-            color = "#ff7ab6" if sig_y and y >= sig_y else "#21d4fd"
-            body_parts.append(f'<circle cx="{sx(x):.1f}" cy="{sy(y):.1f}" r="3.2" fill="{color}" opacity="0.75"/>')
-        body = "\n".join(body_parts)
-    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="{svg_escape(title)}">
+        plot_rows = []
+        for row in draw_rows:
+            chrom = row["chrom"] or "unknown"
+            plot_rows.append((offsets.get(chrom, 0) + row["position"], row))
+        min_x = min(x for x, _ in plot_rows)
+        max_x = max(x for x, _ in plot_rows)
+        if max_x == min_x:
+            max_x = min_x + 1
+        max_y = max(max(-math.log10(row["p"]) for _, row in plot_rows), 1.0)
+        def sx(value): return ml + (value - min_x) / (max_x - min_x) * plot_width
+        def sy(value): return mt + plot_height - value / max_y * plot_height
+        parts = []
+        for grid_index in range(6):
+            y = mt + grid_index * plot_height / 5
+            value = max_y - grid_index * max_y / 5
+            parts.append(f'<line x1="{ml}" y1="{y:.1f}" x2="{ml+plot_width}" y2="{y:.1f}" stroke="rgba(180,210,255,0.18)"/>')
+            parts.append(f'<text x="{ml-10}" y="{y+4:.1f}" fill="#9fb3c8" text-anchor="end" font-size="12">{value:.1f}</text>')
+        parts.append(f'<line x1="{ml}" y1="{mt+plot_height}" x2="{ml+plot_width}" y2="{mt+plot_height}" stroke="#8ecaff"/>')
+        parts.append(f'<line x1="{ml}" y1="{mt}" x2="{ml}" y2="{mt+plot_height}" stroke="#8ecaff"/>')
+        thresholds = []
+        if alpha > 0:
+            thresholds.append((alpha, "nominal p", "#ffd166", "4 8"))
+        if fdr_p_cutoff > 0:
+            thresholds.append((fdr_p_cutoff, "BH FDR q≤" + f"{alpha:g}", "#ff7ab6", "8 8"))
+        if bonferroni_threshold > 0:
+            thresholds.append((bonferroni_threshold, "Bonferroni", "#55efc4", "12 6"))
+        used_y = []
+        for threshold, label, color, dash in thresholds:
+            y_value = -math.log10(threshold)
+            if y_value <= max_y:
+                y_position = sy(y_value)
+                parts.append(f'<line x1="{ml}" y1="{y_position:.1f}" x2="{ml+plot_width}" y2="{y_position:.1f}" stroke="{color}" stroke-width="2" stroke-dasharray="{dash}"/>')
+                label_offset = 12 * sum(abs(y_position - prior) < 18 for prior in used_y)
+                used_y.append(y_position)
+                parts.append(f'<text x="{ml+plot_width-4}" y="{y_position-7-label_offset:.1f}" fill="{color}" text-anchor="end" font-size="11">{svg_escape(label)}</text>')
+        for x_value, row in plot_rows:
+            y_value = -math.log10(row["p"])
+            parts.append(
+                f'<circle cx="{sx(x_value):.1f}" cy="{sy(y_value):.1f}" r="3.2" '
+                f'fill="{point_color(row)}" opacity="0.78"><title>{svg_escape(row["feature"])}; '
+                f'p={row["p"]:.4g}; q={row["q"]:.4g}</title></circle>'
+            )
+        body = "\n".join(parts)
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="SNP marker GWAS Manhattan plot">
 <rect width="100%" height="100%" rx="18" fill="#071226"/>
-<text x="{ml}" y="34" fill="#eef6ff" font-family="Arial" font-size="22" font-weight="700">{svg_escape(title)}</text>
+<text x="{ml}" y="34" fill="#eef6ff" font-family="Arial" font-size="22" font-weight="700">SNP marker GWAS Manhattan plot</text>
 {body}
-<text x="{width/2}" y="{height-18}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle">{svg_escape(xlabel)}</text>
-<text x="20" y="{height/2}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle" transform="rotate(-90 20 {height/2})">{svg_escape(ylabel)}</text>
+<text x="{width/2}" y="{height-18}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle">Reference coordinate / marker order</text>
+<text x="20" y="{height/2}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle" transform="rotate(-90 20 {height/2})">-log10(p-value)</text>
 </svg>'''
     Path(path).write_text(svg)
 
-manhattan_points = []
-for r in draw_rows:
-    chrom = r["chrom"] or "unknown"
-    x = offsets.get(chrom, 0) + r["position"]
-    manhattan_points.append((x, -math.log10(r["p"])))
-make_svg_points_plot(manhattan_points, "SNP marker GWAS Manhattan plot", "Reference genomic coordinate / marker order", "-log10(p-value)", prefix + "_manhattan.svg")
 
-n = len(rows)
-qq = []
-if n:
-    observed = sorted([-math.log10(r["p"]) for r in rows])
-    expected = sorted([-math.log10((i + 0.5) / n) for i in range(n)])
-    qq = list(zip(expected, observed))
-    if len(qq) > max_points:
-        step = max(1, len(qq) // max_points)
-        qq = qq[::step]
-make_svg_points_plot(qq, "SNP marker GWAS QQ plot", "Expected -log10(p-value)", "Observed -log10(p-value)", prefix + "_qq.svg", draw_diag=True)
+def make_qq(path):
+    width, height = 980, 520
+    ml, mr, mt, mb = 74, 26, 58, 68
+    plot_width, plot_height = width - ml - mr, height - mt - mb
+    observed = sorted([-math.log10(row["p"]) for row in rows])
+    expected = sorted([-math.log10((index + 0.5) / len(rows)) for index in range(len(rows))]) if rows else []
+    points = list(zip(expected, observed))
+    if len(points) > max_points:
+        step = max(1, len(points) // max_points)
+        points = points[::step]
+    if not points:
+        body = f'<text x="{width/2}" y="{height/2}" fill="#9fb3c8" text-anchor="middle">No valid SNP p-values available</text>'
+    else:
+        maximum = max(max(x for x, _ in points), max(y for _, y in points), 1.0)
+        def sx(value): return ml + value / maximum * plot_width
+        def sy(value): return mt + plot_height - value / maximum * plot_height
+        parts = [f'<line x1="{ml}" y1="{mt+plot_height}" x2="{ml+plot_width}" y2="{mt}" stroke="rgba(255,255,255,0.38)" stroke-width="2"/>']
+        for x_value, y_value in points:
+            parts.append(f'<circle cx="{sx(x_value):.1f}" cy="{sy(y_value):.1f}" r="3.0" fill="#21d4fd" opacity="0.76"/>')
+        body = "\n".join(parts)
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="SNP marker GWAS QQ plot">
+<rect width="100%" height="100%" rx="18" fill="#071226"/>
+<text x="{ml}" y="34" fill="#eef6ff" font-family="Arial" font-size="22" font-weight="700">SNP marker GWAS QQ plot</text>
+{body}
+<text x="{width/2}" y="{height-18}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle">Expected -log10(p-value)</text>
+<text x="20" y="{height/2}" fill="#cfe8ff" font-family="Arial" font-size="14" text-anchor="middle" transform="rotate(-90 20 {height/2})">Observed -log10(p-value)</text>
+</svg>'''
+    Path(path).write_text(svg)
 
-sig_count = sum(1 for r in rows if r["p"] <= alpha)
-top = sorted(rows, key=lambda r: r["p"])[0] if rows else None
+
+make_manhattan(prefix + "_manhattan.svg")
+make_qq(prefix + "_qq.svg")
+
+top = rows_by_p[0] if rows_by_p else None
 top_feature = top["feature"] if top else "NA"
-top_position = (str(top.get("position", "")) if top else "")
-top_p = top["p"] if top else None
-top_logp = -math.log10(top_p) if top_p else 0.0
+top_position = str(top["position"]) if top else "NA"
+top_pvalue = top["p"] if top else None
+top_qvalue = top["q"] if top else None
+top_logp = -math.log10(top_pvalue) if top_pvalue else 0.0
+
 if rows:
-    observed_full = sorted([-math.log10(r["p"]) for r in rows])
-    expected_full = sorted([-math.log10((i + 0.5) / len(rows)) for i in range(len(rows))])
-    mid = len(observed_full) // 2
-    median_delta = observed_full[mid] - expected_full[mid]
+    observed_full = sorted([-math.log10(row["p"]) for row in rows])
+    expected_full = sorted([-math.log10((index + 0.5) / len(rows)) for index in range(len(rows))])
+    midpoint = len(rows) // 2
+    median_delta = observed_full[midpoint] - expected_full[midpoint]
     tail_delta = observed_full[-1] - expected_full[-1]
 else:
     median_delta = 0.0
     tail_delta = 0.0
 
 if not rows:
-    manhattan_layman = "No valid SNP p-values were available. This usually means the SNP branch was not run, no usable SNPs passed filters, or pyseer did not return SNP association statistics."
-elif sig_count == 0:
-    manhattan_layman = f"Each dot is a SNP marker. Taller dots mean stronger evidence that the marker differs between the two phenotype groups. In this run, none of the {len(rows)} tested SNP markers crossed the alpha={alpha:g} line, so there is no strong SNP signal at this threshold."
-elif sig_count == 1:
-    manhattan_layman = f"Each dot is a SNP marker placed by reference coordinate when available. One of {len(rows)} tested SNP markers crossed the alpha={alpha:g} line. The strongest marker was {top_feature} at position {top_position} (p={top_p:.3g}). Treat it as a candidate mutation signal and verify it against known biology, coverage, lineage structure, and any recombination filtering."
+    manhattan_layman = "No valid SNP p-values were available. The SNP branch may not have run or no usable markers passed filtering."
+elif not fdr_rows:
+    manhattan_layman = (
+        f"The plot contains {len(rows)} tested SNP markers. No marker passed Benjamini-Hochberg FDR q≤{alpha:g}. "
+        f"There were {len(nominal_rows)} nominal p≤{alpha:g} markers, but these are not labelled statistically significant after correction."
+    )
 else:
-    manhattan_layman = f"Each dot is a SNP marker placed by reference coordinate when available. {sig_count} of {len(rows)} tested SNP markers crossed the alpha={alpha:g} line. The strongest marker was {top_feature} at position {top_position} (p={top_p:.3g}). Clusters of SNP hits can reflect true mutation signal, lineage background, or linked variants, so review the top-hit table and PCoA/kinship plots before interpretation."
+    manhattan_layman = (
+        f"The plot contains {len(rows)} tested SNP markers. {len(fdr_rows)} passed Benjamini-Hochberg FDR q≤{alpha:g}, "
+        f"and {len(bonferroni_rows)} also passed the Bonferroni threshold ({bonferroni_threshold:.3g}). "
+        f"The strongest marker was {top_feature} at position {top_position} (p={top_pvalue:.3g}; q={top_qvalue:.3g}). "
+        "Interpret clusters of SNP signals with lineage, linkage, mapping quality, and recombination information."
+    )
 
 if not rows:
-    qq_layman = "No valid SNP p-values were available, so the SNP QQ plot cannot be interpreted for this run."
-elif sig_count == 0 and tail_delta < 0.5 and abs(median_delta) < 0.35:
-    qq_layman = "The SNP QQ plot does not show a strong upward tail, supporting the interpretation that no clear SNP-level signal was detected at the chosen threshold."
+    qq_layman = "No valid SNP p-values were available, so the SNP QQ plot cannot be interpreted."
 elif median_delta > 0.35:
-    qq_layman = f"The SNP QQ plot shows broad upward deviation from the null expectation (median observed minus expected -log10 p-value approximately {median_delta:.2f}). In microbial GWAS, this can indicate confounding from lineage, relatedness, outbreak structure, recombination, or phenotype imbalance. Interpret SNP hits only after checking population structure and filtering choices."
-elif tail_delta > 0.5 and sig_count > 0:
-    qq_layman = "The SNP QQ plot has a raised upper tail with less broad inflation across the rest of the plot. This pattern is compatible with a limited number of candidate SNP associations, but they still need biological validation and lineage checks."
+    qq_layman = (
+        f"The SNP QQ plot shows broad upward deviation from the null expectation (median delta {median_delta:.2f}). "
+        "This may reflect lineage, relatedness, outbreak structure, recombination, phenotype imbalance, or widespread true signal."
+    )
+elif tail_delta > 0.5 and fdr_rows:
+    qq_layman = "Most SNP QQ-plot points follow the expected background, with an elevated upper tail containing FDR-supported candidates. These still require quality, lineage, and biological validation."
 else:
-    qq_layman = "The SNP QQ plot does not show strong genome-wide inflation. Any outlying SNPs should still be reviewed alongside quality, recombination, and lineage information."
+    qq_layman = "The SNP QQ plot does not show strong broad inflation. Outlying SNPs should still be reviewed with quality, lineage, and recombination information."
 
 with open(prefix + "_plot_summary.tsv", "w") as out:
     out.write("metric\tvalue\n")
     out.write("plot_label\tSNP marker GWAS\n")
     out.write(f"pvalues_detected\t{len(rows)}\n")
-    out.write(f"significant_points_at_alpha\t{sig_count}\n")
+    out.write(f"points_drawn\t{len(draw_rows)}\n")
+    out.write("multiple_testing_method\tBenjamini-Hochberg FDR and Bonferroni\n")
+    out.write(f"family_alpha\t{alpha}\n")
+    out.write(f"nominal_significant_points\t{len(nominal_rows)}\n")
+    out.write(f"fdr_significant_points\t{len(fdr_rows)}\n")
+    out.write(f"bonferroni_significant_points\t{len(bonferroni_rows)}\n")
+    out.write(f"significant_points_at_alpha\t{len(fdr_rows)}\n")
+    out.write(f"fdr_equivalent_pvalue_cutoff\t{fdr_p_cutoff if fdr_p_cutoff else 'NA'}\n")
+    out.write(f"bonferroni_pvalue_threshold\t{bonferroni_threshold if m else 'NA'}\n")
     out.write(f"top_marker\t{top_feature}\n")
-    out.write(f"top_position\t{top_position or 'NA'}\n")
-    out.write(f"top_pvalue\t{top_p if top_p is not None else 'NA'}\n")
+    out.write(f"top_position\t{top_position}\n")
+    out.write(f"top_pvalue\t{top_pvalue if top_pvalue is not None else 'NA'}\n")
+    out.write(f"top_qvalue\t{top_qvalue if top_qvalue is not None else 'NA'}\n")
     out.write(f"top_minus_log10_pvalue\t{top_logp:.4f}\n")
     out.write(f"qq_median_delta_observed_minus_expected\t{median_delta:.4f}\n")
     out.write(f"qq_tail_delta_observed_minus_expected\t{tail_delta:.4f}\n")
-    out.write(f"points_drawn\t{len(draw_rows)}\n")
     out.write("manhattan_type\treference_coordinate_when_available\n")
     out.write("qq_plot\tgenerated\n")
     out.write(f"layman_manhattan_interpretation\t{manhattan_layman}\n")
@@ -2520,7 +3094,6 @@ PY
   }
 }
 
-
 task MAKE_SNP_GWAS_EMPTY_OUTPUTS {
   input {
     String output_prefix
@@ -2533,9 +3106,12 @@ cat > ~{output_prefix}_pyseer_snp_assoc.tsv <<'EOF'
 variant	lrt-pvalue	beta	note
 EOF
 cat > ~{output_prefix}_top_snp_hits.tsv <<'EOF'
-rank	feature_id	variant_id	feature_type	contig	position	ref	alt	gene_name	product	case_alt	case_total	case_frequency	control_alt	control_total	control_frequency	enriched_in	odds_ratio	odds_ratio_ci95_lower	odds_ratio_ci95_upper	odds_ratio_ci95	beta	pyseer_pvalue	q_value	priority_score	annotation_source	notes
+rank	feature_id	variant_id	feature_type	contig	position	ref	alt	qual	gene_name	product	reference_locus_tag	reference_gene	reference_product	reference_location	case_alt	case_total	case_frequency	control_alt	control_total	control_frequency	enriched_in	beta	odds_ratio	odds_ratio_ci95_lower	odds_ratio_ci95_upper	odds_ratio_ci95	pyseer_pvalue	q_value	nominal_significant	fdr_significant	bonferroni_significant	significance_class	priority_score	annotation_source	notes
 EOF
+cp ~{output_prefix}_top_snp_hits.tsv ~{output_prefix}_all_ranked_snp_hits.tsv
 cp ~{output_prefix}_top_snp_hits.tsv ~{output_prefix}_all_significant_snp_hits.tsv
+cp ~{output_prefix}_top_snp_hits.tsv ~{output_prefix}_all_nominal_snp_hits.tsv
+cp ~{output_prefix}_top_snp_hits.tsv ~{output_prefix}_all_bonferroni_snp_hits.tsv
 cat > ~{output_prefix}_snp_summary.tsv <<'EOF'
 metric	value
 snp_gwas_status	not_run
@@ -2562,8 +3138,11 @@ EOF
 
   output {
     File pyseer_snp_assoc = "~{output_prefix}_pyseer_snp_assoc.tsv"
+    File snp_all_ranked_hits = "~{output_prefix}_all_ranked_snp_hits.tsv"
     File snp_top_hits = "~{output_prefix}_top_snp_hits.tsv"
     File snp_all_significant_hits = "~{output_prefix}_all_significant_snp_hits.tsv"
+    File snp_all_nominal_hits = "~{output_prefix}_all_nominal_snp_hits.tsv"
+    File snp_all_bonferroni_hits = "~{output_prefix}_all_bonferroni_snp_hits.tsv"
     File snp_summary = "~{output_prefix}_snp_summary.tsv"
     File snp_vcf = "~{output_prefix}.snps.vcf"
     File snp_manhattan_plot_svg = "~{output_prefix}_manhattan.svg"
@@ -2789,6 +3368,7 @@ task SNP_CALLING_SNIPPY {
     Int threads
     Int memory_gb
     Int disk_gb
+    Int snippy_ram_gb
     String docker
   }
 
@@ -2840,6 +3420,9 @@ paste sample_names.txt read1s.txt read2s.txt >> snp_sample_manifest.tsv
   echo "Samples: $(($(wc -l < snp_sample_manifest.tsv)-1))"
   echo "Reference FASTA: reference.fasta"
   echo "SNP QUAL filter: ~{snp_min_qual}"
+  echo "Runtime memory requested: ~{memory_gb} GB"
+  echo "Snippy command RAM: ~{snippy_ram_gb} GB"
+  echo "Threads: ~{threads}"
 } > snp_calling.log
 
 for tool in snippy snippy-core; do
@@ -2858,7 +3441,7 @@ tail -n +2 snp_sample_manifest.tsv | while IFS=$'\t' read -r sample r1 r2; do
     --R1 "$r1" \
     --R2 "$r2" \
     --cpus ~{threads} \
-    --ram ~{memory_gb} \
+    --ram ~{snippy_ram_gb} \
     --force
   if [ ! -s "snippy_out/${sample}/snps.vcf" ]; then
     echo "ERROR: missing Snippy VCF for ${sample}" >&2
@@ -2866,186 +3449,51 @@ tail -n +2 snp_sample_manifest.tsv | while IFS=$'\t' read -r sample r1 r2; do
   fi
 done
 
-# Record exactly how many per-sample Snippy VCFs were produced.
-find snippy_out -mindepth 2 -maxdepth 2 -name snps.vcf | sort > snippy_plain_vcf_list.txt
-find snippy_out -mindepth 2 -maxdepth 2 -name snps.vcf.gz | sort > snippy_vcfgz_list.txt
-n_snippy_vcfs=$(grep -cv '^[[:space:]]*$' snippy_plain_vcf_list.txt || true)
-echo "Per-sample Snippy plain VCFs available: ${n_snippy_vcfs}" | tee -a snp_calling.log >&2
-
-# Run snippy-core for diagnostic/alignment outputs, but do not depend on its core.vcf
-# for the SNP GWAS matrix. For large/clonal MTBC sets, snippy-core can fail even after
-# every single per-sample Snippy run succeeds.
-cohort_vcf_source="per_sample_snippy_vcf_matrix"
-snippy_core_rc=0
-
-echo "Running snippy-core cohort aggregation for diagnostic alignment only..." | tee -a snp_calling.log >&2
-set +e
 snippy-core --ref reference.fasta --prefix core snippy_out/* >> snp_calling.log 2>&1
-snippy_core_rc=$?
-set -e
-echo "snippy-core exit code: ${snippy_core_rc}" | tee -a snp_calling.log >&2
-if [ -s core.vcf ]; then
-  cp core.vcf snippy_core.raw.core.vcf || true
+
+if [ ! -s core.vcf ]; then
+  echo "WARNING: snippy-core did not produce a non-empty core.vcf; creating an empty cohort VCF." >> snp_calling.log
+  {
+    echo '##fileformat=VCFv4.2'
+    printf '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT'
+    tail -n +2 snp_sample_manifest.tsv | cut -f1 | while read -r sample; do
+      printf '\t%s' "$sample"
+    done
+    printf '\n'
+  } > core.vcf
+  : > core.full.aln
 fi
 
-# Build a pyseer-ready multi-sample bacterial SNP VCF directly from per-sample Snippy VCFs.
-# This avoids empty SNP reports when snippy-core aggregation fails. Each record is a
-# biallelic SNP marker; samples with the SNP are coded 1/1 and all other samples are
-# coded 0/0, which is the appropriate presence/absence encoding for reference-based
-# bacterial SNP markers produced by per-sample Snippy.
-python <<'PY'
-from __future__ import print_function
-import os, sys, csv, re, math
-
-qthr = float("~{snp_min_qual}")
-manifest = "snp_sample_manifest.tsv"
-records = {}
-samples = []
-sample_to_vcf = {}
-missing_vcfs = []
-parsed_vcfs = 0
-raw_variant_records_seen = 0
-variant_records_passing_basic_filters = 0
-
-with open(manifest, "r") as fh:
-    header = fh.readline()
-    for line in fh:
-        if not line.strip():
-            continue
-        parts = line.rstrip("\n").split("\t")
-        sample = parts[0]
-        samples.append(sample)
-        sample_to_vcf[sample] = os.path.join("snippy_out", sample, "snps.vcf")
-
-def parse_qual(x):
-    try:
-        if x in ("", ".", "NA", "nan", "None"):
-            return None
-        return float(x)
-    except Exception:
-        return None
-
-for sample in samples:
-    vcf_path = sample_to_vcf.get(sample)
-    if not vcf_path or not os.path.exists(vcf_path) or os.path.getsize(vcf_path) == 0:
-        missing_vcfs.append(sample)
-        continue
-    parsed_vcfs += 1
-    with open(vcf_path, "r") as fh:
-        for line in fh:
-            if not line.strip() or line.startswith("#"):
-                continue
-            raw_variant_records_seen += 1
-            parts = line.rstrip("\n").split("\t")
-            if len(parts) < 5:
-                continue
-            chrom, pos, vid, ref, alt = parts[:5]
-            qual = parts[5] if len(parts) > 5 else "."
-            if len(ref) != 1:
-                continue
-            if "," in alt or len(alt) != 1:
-                continue
-            q = parse_qual(qual)
-            if q is not None and q < qthr:
-                continue
-            try:
-                ipos = int(pos)
-            except Exception:
-                continue
-            variant_records_passing_basic_filters += 1
-            key = (chrom, ipos, ref, alt)
-            if key not in records:
-                records[key] = {"samples": set(), "quals": []}
-            records[key]["samples"].add(sample)
-            if q is not None:
-                records[key]["quals"].append(q)
-
-n_samples = len(samples)
-informative = []
-fixed_alt_sites_skipped = 0
-for key, rec in records.items():
-    alt_count = len(rec["samples"])
-    if alt_count == 0:
-        continue
-    if n_samples > 0 and alt_count >= n_samples:
-        fixed_alt_sites_skipped += 1
-        continue
-    informative.append((key, rec))
-
-def chrom_sort_key(x):
-    chrom, pos, ref, alt = x[0]
-    m = re.search(r"(\d+)$", chrom)
-    chrom_key = (chrom[:m.start()] if m else chrom, int(m.group(1)) if m else 0)
-    return (chrom_key, pos, ref, alt)
-
-informative.sort(key=chrom_sort_key)
-
-def write_vcf(path):
-    with open(path, "w") as out:
-        out.write("##fileformat=VCFv4.2\n")
-        out.write("##source=rMAP_GWAS_per_sample_snippy_vcf_matrix\n")
-        out.write("##INFO=<ID=NS,Number=1,Type=Integer,Description=\"Number of samples\">\n")
-        out.write("##INFO=<ID=AC,Number=1,Type=Integer,Description=\"Alternate allele count encoded from per-sample Snippy VCFs\">\n")
-        out.write("##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n")
-        out.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT")
-        for s in samples:
-            out.write("\t" + s)
-        out.write("\n")
-        for key, rec in informative:
-            chrom, pos, ref, alt = key
-            marker_id = "%s_%s_%s_%s" % (chrom, pos, ref, alt)
-            qs = rec.get("quals", [])
-            qual = ("%.6g" % max(qs)) if qs else "."
-            alt_count = len(rec["samples"])
-            info = "NS=%d;AC=%d" % (n_samples, alt_count)
-            out.write("%s\t%d\t%s\t%s\t%s\t%s\tPASS\t%s\tGT" % (chrom, pos, marker_id, ref, alt, qual, info))
-            alt_samples = rec["samples"]
-            for s in samples:
-                out.write("\t" + ("1/1" if s in alt_samples else "0/0"))
-            out.write("\n")
-
-write_vcf("core.vcf")
-write_vcf("rmap_gwas.snps.vcf")
-
-with open("snp_calling_summary.tsv", "w") as out:
-    out.write("metric\tvalue\n")
-    out.write("snp_calling_tool\tsnippy_per_sample_plus_direct_vcf_matrix\n")
-    out.write("cohort_vcf_source\tper_sample_snippy_vcf_matrix\n")
-    out.write("samples_in_manifest\t%d\n" % n_samples)
-    out.write("per_sample_snippy_vcfs\t%d\n" % parsed_vcfs)
-    out.write("missing_sample_vcfs\t%d\n" % len(missing_vcfs))
-    out.write("raw_per_sample_variant_records_seen\t%d\n" % raw_variant_records_seen)
-    out.write("variant_records_passing_basic_filters\t%d\n" % variant_records_passing_basic_filters)
-    out.write("unique_biallelic_snp_markers_before_fixed_site_filter\t%d\n" % len(records))
-    out.write("fixed_alt_sites_skipped\t%d\n" % fixed_alt_sites_skipped)
-    out.write("raw_core_vcf_records\t%d\n" % len(informative))
-    out.write("snps_after_qual_filter\t%d\n" % len(informative))
-    out.write("qual_threshold\t%s\n" % qthr)
-    if missing_vcfs:
-        out.write("missing_vcf_samples\t%s\n" % ",".join(missing_vcfs))
-
-if len(informative) == 0:
-    sys.stderr.write("WARNING: direct per-sample Snippy VCF matrix contained zero informative biallelic SNP markers after filters.\n")
-else:
-    sys.stderr.write("Direct per-sample Snippy VCF matrix wrote %d informative SNP markers across %d samples.\n" % (len(informative), n_samples))
-PY
-
+# Keep only simple biallelic SNPs above the requested QUAL threshold.
+awk -v qthr="~{snp_min_qual}" '
+BEGIN { FS=OFS="\t"; kept=0; total=0; out="rmap_gwas.snps.vcf"; summary="snp_calling_summary.tsv" }
+/^##/ { print > out; next }
+/^#CHROM/ { print > out; next }
+NF == 0 { next }
 {
-  echo -e "snippy_core_exit_code\t${snippy_core_rc}"
-  echo -e "cohort_vcf_source\t${cohort_vcf_source}"
-  echo -e "plain_per_sample_snippy_vcfs_found\t${n_snippy_vcfs}"
-} >> snp_calling_summary.tsv
+  total++
+  ref=$4
+  alt=$5
+  qual=$6
+  if (length(ref) != 1) next
+  if (index(alt, ",") > 0 || length(alt) != 1) next
+  q=qual
+  if (qual == "." || qual == "" || qual == "NA") q=1e99
+  if ((q + 0) < qthr) next
+  $3=$1 "_" $2 "_" $4 "_" $5
+  print > out
+  kept++
+}
+END {
+  print "metric", "value" > summary
+  print "snp_calling_tool", "snippy_snippy-core" >> summary
+  print "raw_core_vcf_records", total >> summary
+  print "snps_after_qual_filter", kept >> summary
+  print "qual_threshold", qthr >> summary
+}' core.vcf
 
 if [ ! -e core.full.aln ]; then
   touch core.full.aln
-fi
-
-# Do not silently return an empty SNP VCF when SNP GWAS is explicitly requested.
-# The report can only show SNP p-values if this VCF has variant records.
-n_final_snps=$(grep -vc '^#' rmap_gwas.snps.vcf || true)
-echo "Final pyseer SNP VCF records: ${n_final_snps}" | tee -a snp_calling.log >&2
-if [ "${n_final_snps}" -eq 0 ]; then
-  echo "WARNING: rmap_gwas.snps.vcf contains zero SNP records; downstream SNP GWAS will have no p-values." | tee -a snp_calling.log >&2
 fi
 
 cat snp_calling_summary.tsv >> snp_calling.log
@@ -3066,9 +3514,9 @@ cat snp_calling.log >&2
     cpu: threads
     memory: "~{memory_gb} GB"
     disks: "local-disk ~{disk_gb} HDD"
+    preemptible: 0
   }
 }
-
 
 task PYSEER_SNP_GWAS {
   input {
@@ -3110,117 +3558,41 @@ if ! command -v pyseer >/dev/null 2>&1; then
   exit 1
 fi
 
-count_valid_pvalues() {
-  python - "$1" <<'PY'
-from __future__ import print_function
-import sys, re, math
-path = sys.argv[1]
-valid = 0
-rows = 0
-try:
-    with open(path, "r") as fh:
-        first = fh.readline().rstrip("\n")
-        header = re.split(r"\t|\s+", first.strip()) if first else []
-        lower = dict((h.lower(), i) for i, h in enumerate(header))
-        pidx = None
-        for name in ["lrt-pvalue", "lrt_pvalue", "filter-pvalue", "pvalue", "p-value", "p"]:
-            if name.lower() in lower:
-                pidx = lower[name.lower()]
-                break
-        for line in fh:
-            if not line.strip() or line.startswith("#"):
-                continue
-            rows += 1
-            parts = re.split(r"\t|\s+", line.strip())
-            if pidx is not None and pidx < len(parts):
-                try:
-                    v = float(parts[pidx])
-                    if v > 0 and v <= 1 and not math.isnan(v):
-                        valid += 1
-                except Exception:
-                    pass
-except Exception:
-    pass
-print("%d\t%d" % (rows, valid))
-PY
-}
-
-run_pyseer_with_distances() {
-  pyseer --phenotypes ~{phenotype_tsv} --vcf rmap_gwas.snps.vcf \
-    --distances ~{mash_distances} --max-dimensions ~{max_dimensions} \
-    --min-af ~{min_af} --max-af ~{max_af} --cpu ~{threads} \
-    > pyseer_snp_assoc.tsv 2> pyseer_snp.stderr.log
-}
-
-run_pyseer_no_distances() {
-  pyseer --phenotypes ~{phenotype_tsv} --vcf rmap_gwas.snps.vcf --no-distances \
-    --min-af ~{min_af} --max-af ~{max_af} --cpu ~{threads} \
-    > pyseer_snp_assoc.tsv 2> pyseer_snp.no_distances.stderr.log
-}
-
-pyseer_mode="not_run"
-primary_rc="NA"
-fallback_rc="NA"
-assoc_rows=0
-valid_pvalue_rows=0
-
 if [ "$n_snps" -eq 0 ]; then
   echo -e "variant\tlrt-pvalue\tbeta\tnote" > pyseer_snp_assoc.tsv
   echo "No SNPs passed filters; wrote an empty pyseer SNP association table." >> pyseer_snp_run.log
 else
   if [[ "~{force_no_distances}" == "true" ]]; then
-    pyseer_mode="no_distances_requested"
-    set +e
-    run_pyseer_no_distances
-    fallback_rc=$?
-    set -e
-    cat pyseer_snp.no_distances.stderr.log >&2 || true
-    if [[ "$fallback_rc" -ne 0 ]]; then
-      echo "SNP pyseer no-distances run failed with exit code ${fallback_rc}." >> pyseer_snp_run.log
-      exit "$fallback_rc"
-    fi
+    pyseer --phenotypes ~{phenotype_tsv} --vcf rmap_gwas.snps.vcf --no-distances \
+      --min-af ~{min_af} --max-af ~{max_af} --cpu ~{threads} \
+      > pyseer_snp_assoc.tsv 2> pyseer_snp.stderr.log
+    cat pyseer_snp.stderr.log >&2
   else
-    pyseer_mode="distances"
     set +e
-    run_pyseer_with_distances
-    primary_rc=$?
+    pyseer --phenotypes ~{phenotype_tsv} --vcf rmap_gwas.snps.vcf \
+      --distances ~{mash_distances} --max-dimensions ~{max_dimensions} \
+      --min-af ~{min_af} --max-af ~{max_af} --cpu ~{threads} \
+      > pyseer_snp_assoc.tsv 2> pyseer_snp.stderr.log
+    rc=$?
     set -e
-    cat pyseer_snp.stderr.log >&2 || true
-
-    if [[ "$primary_rc" -ne 0 ]]; then
-      if [[ "~{no_distances_fallback}" == "true" ]]; then
-        echo "Primary SNP pyseer run failed with distances; retrying with --no-distances." >> pyseer_snp_run.log
-        pyseer_mode="no_distances_fallback_after_failure"
-        set +e
-        run_pyseer_no_distances
-        fallback_rc=$?
-        set -e
-        cat pyseer_snp.no_distances.stderr.log >&2 || true
-        if [[ "$fallback_rc" -ne 0 ]]; then
-          echo "Fallback SNP pyseer run without distances also failed with exit code ${fallback_rc}." >> pyseer_snp_run.log
-          exit "$fallback_rc"
-        fi
-      else
-        exit "$primary_rc"
-      fi
-    fi
-
-    counts=$(count_valid_pvalues pyseer_snp_assoc.tsv)
-    assoc_rows=$(echo "$counts" | cut -f1)
-    valid_pvalue_rows=$(echo "$counts" | cut -f2)
-
-    if [[ "$primary_rc" -eq 0 && "$valid_pvalue_rows" -eq 0 && "~{no_distances_fallback}" == "true" ]]; then
-      echo "Primary SNP pyseer run completed but returned zero valid p-values; retrying with --no-distances." >> pyseer_snp_run.log
-      pyseer_mode="no_distances_fallback_after_zero_pvalues"
+    if [[ "$rc" -ne 0 && "~{no_distances_fallback}" == "true" ]]; then
+      echo "Primary SNP pyseer run failed with distances; retrying with --no-distances." >> pyseer_snp_run.log
       set +e
-      run_pyseer_no_distances
-      fallback_rc=$?
+      pyseer --phenotypes ~{phenotype_tsv} --vcf rmap_gwas.snps.vcf --no-distances \
+        --min-af ~{min_af} --max-af ~{max_af} --cpu ~{threads} \
+        > pyseer_snp_assoc.tsv 2> pyseer_snp.no_distances.stderr.log
+      rc2=$?
       set -e
-      cat pyseer_snp.no_distances.stderr.log >&2 || true
-      if [[ "$fallback_rc" -ne 0 ]]; then
-        echo "Fallback SNP pyseer run without distances failed with exit code ${fallback_rc}." >> pyseer_snp_run.log
-        exit "$fallback_rc"
+      cat pyseer_snp.no_distances.stderr.log >&2
+      if [[ "$rc2" -ne 0 ]]; then
+        echo "Fallback SNP pyseer run without distances also failed with exit code ${rc2}." >> pyseer_snp_run.log
+        exit "$rc2"
       fi
+    elif [[ "$rc" -ne 0 ]]; then
+      cat pyseer_snp.stderr.log >&2
+      exit "$rc"
+    else
+      cat pyseer_snp.stderr.log >&2
     fi
   fi
 fi
@@ -3231,24 +3603,12 @@ if [ ! -s pyseer_snp_assoc.tsv ]; then
   exit 1
 fi
 
-counts=$(count_valid_pvalues pyseer_snp_assoc.tsv)
-assoc_rows=$(echo "$counts" | cut -f1)
-valid_pvalue_rows=$(echo "$counts" | cut -f2)
-
 {
   echo -e "metric\tvalue"
   echo -e "snp_gwas_status\trun"
   echo -e "snps_after_qual_filter\t${n_snps}"
-  echo -e "pyseer_mode\t${pyseer_mode}"
-  echo -e "primary_pyseer_exit_code\t${primary_rc}"
-  echo -e "fallback_pyseer_exit_code\t${fallback_rc}"
-  echo -e "pyseer_rows\t${assoc_rows}"
-  echo -e "pyseer_valid_pvalue_rows\t${valid_pvalue_rows}"
+  echo -e "pyseer_rows\t$(($(wc -l < pyseer_snp_assoc.tsv)-1))"
 } > snp_gwas_summary.tsv
-
-if [[ "$n_snps" -gt 0 && "$valid_pvalue_rows" -eq 0 ]]; then
-  echo "WARNING: SNP VCF contained ${n_snps} markers, but pyseer returned zero valid SNP p-values. Check pyseer_snp stderr logs and phenotype/sample-name matching." >> pyseer_snp_run.log
-fi
 
 cat snp_gwas_summary.tsv >> pyseer_snp_run.log
 cat pyseer_snp_run.log >&2
@@ -3269,7 +3629,6 @@ cat pyseer_snp_run.log >&2
 }
 
 
-
 task PRIORITIZE_SNP_GWAS_HITS {
   input {
     File phenotype_tsv
@@ -3288,112 +3647,200 @@ python <<'PY'
 from pathlib import Path
 import csv, re, math
 
-phenotypes = {}
-with open("~{phenotype_tsv}") as fh:
-    header = fh.readline().rstrip("\n").split("\t")
-    for line in fh:
-        if line.strip():
-            sample, val = line.rstrip("\n").split("\t")[:2]
-            phenotypes[sample] = int(float(val))
-cases = {s for s,v in phenotypes.items() if v == 1}
-controls = {s for s,v in phenotypes.items() if v == 0}
 alpha = float("~{significance_alpha}")
 prefix = "~{output_prefix}"
 
-def parse_float(x):
+
+def parse_float(value):
     try:
-        if x in (None, "", "NA", "nan", "None"):
+        if value is None or str(value).strip() in ("", "NA", "nan", "None", "."):
             return None
-        return float(x)
+        number = float(value)
+        if math.isnan(number):
+            return None
+        return number
     except Exception:
         return None
 
+
 def pick(row, names):
-    lower = {k.lower(): k for k in row}
-    for n in names:
-        if n in row:
-            return row[n]
-        if n.lower() in lower:
-            return row[lower[n.lower()]]
+    lower = {str(k).lower(): k for k in row}
+    for name in names:
+        if name in row:
+            return row[name]
+        if name.lower() in lower:
+            return row[lower[name.lower()]]
     return ""
 
+
+def bh_adjust(pvalues):
+    m = len(pvalues)
+    if m == 0:
+        return []
+    order = sorted(range(m), key=lambda i: pvalues[i])
+    adjusted = [1.0] * m
+    running = 1.0
+    for reverse_rank, index in enumerate(reversed(order), start=1):
+        rank = m - reverse_rank + 1
+        candidate = min(1.0, pvalues[index] * m / rank)
+        running = min(running, candidate)
+        adjusted[index] = running
+    return adjusted
+
+
+def parse_location(location):
+    ranges = []
+    for start, end, single in re.findall(r"<?(\d+)\.\.>?(\d+)|<?(\d+)", location or ""):
+        if single:
+            ranges.append((int(single), int(single)))
+        else:
+            ranges.append((int(start), int(end)))
+    return ranges
+
+
+def append_qualifier(qualifiers, key, value):
+    value = (value or "").strip()
+    if value.startswith('"'):
+        value = value[1:]
+    if value.endswith('"'):
+        value = value[:-1]
+    sep = " " if qualifiers.get(key) and value else ""
+    qualifiers[key] = qualifiers.get(key, "") + sep + re.sub(r"\s+", " ", value).strip()
+
+
 def parse_genbank_cds(path):
-    txt = Path(path).read_text(errors="replace") if Path(path).exists() else ""
-    m = re.search(r"\nFEATURES\s+Location/Qualifiers\s*(.*?)(?=\nORIGIN)", txt, flags=re.S)
-    lines = m.group(1).splitlines() if m else []
-    cds = []
-    cur = None
-    key = None
-    for line in lines:
-        if re.match(r"^     \S+", line):
-            fkey = line[5:21].strip()
-            loc = line[21:].strip()
-            if fkey == "CDS":
-                cur = {"location": loc, "qualifiers": {}}
-                cds.append(cur)
-            else:
-                cur = None
-            key = None
+    """Parse CDS features from every GenBank record and retain record IDs."""
+    text = Path(path).read_text(errors="replace") if Path(path).exists() else ""
+    records = []
+    for record_index, block in enumerate(re.split(r"(?m)^//\s*$", text), start=1):
+        if not block.strip():
             continue
-        if cur is None:
+        locus_match = re.search(r"(?m)^LOCUS\s+(\S+)", block)
+        accession_match = re.search(r"(?m)^ACCESSION\s+(\S+)", block)
+        version_match = re.search(r"(?m)^VERSION\s+(\S+)", block)
+        identifiers = {
+            value for value in [
+                locus_match.group(1) if locus_match else "",
+                accession_match.group(1) if accession_match else "",
+                version_match.group(1) if version_match else "",
+            ] if value
+        }
+        if not identifiers:
+            identifiers = {f"record_{record_index}"}
+        features_match = re.search(
+            r"(?ms)^FEATURES\s+Location/Qualifiers\s*\n(.*?)(?=^(?:ORIGIN|CONTIG|BASE COUNT|WGS|WGS_SCAFLD)\b|\Z)",
+            block,
+        )
+        if not features_match:
             continue
-        st = line.strip()
-        qm = re.match(r"/([^=]+)=(.*)", st)
-        if qm:
-            key = qm.group(1)
-            val = qm.group(2).strip().strip('"')
-            cur["qualifiers"].setdefault(key, "")
-            cur["qualifiers"][key] += val
-        elif key:
-            cur["qualifiers"][key] += st.strip().strip('"')
-    out = []
-    for c in cds:
-        ranges = []
-        for a,b,single in re.findall(r"<?(\d+)\.\.>?(\d+)|<?(\d+)", c.get("location","")):
-            if single:
-                ranges.append((int(single), int(single)))
+        current = None
+        current_key = None
+        features = []
+        for line in features_match.group(1).splitlines():
+            feature_key = line[5:21].strip() if len(line) >= 21 and line.startswith("     ") else ""
+            if feature_key:
+                if feature_key == "CDS":
+                    current = {"location": line[21:].strip(), "qualifiers": {}}
+                    features.append(current)
+                else:
+                    current = None
+                current_key = None
+                continue
+            if current is None:
+                continue
+            stripped = line.strip()
+            if not stripped:
+                continue
+            match = re.match(r"/([^=\s]+)(?:=(.*))?$", stripped)
+            if match:
+                current_key = match.group(1)
+                append_qualifier(current["qualifiers"], current_key, match.group(2) or "true")
+            elif current_key is None:
+                current["location"] += stripped
             else:
-                ranges.append((int(a), int(b)))
-        q = c.get("qualifiers", {})
-        out.append({"ranges": ranges, "locus_tag": q.get("locus_tag",""), "gene": q.get("gene",""), "product": q.get("product",""), "location": c.get("location","")})
-    return out
+                append_qualifier(current["qualifiers"], current_key, stripped)
+        for feature in features:
+            qualifiers = feature["qualifiers"]
+            records.append({
+                "record_ids": identifiers,
+                "ranges": parse_location(feature["location"]),
+                "locus_tag": qualifiers.get("locus_tag", ""),
+                "gene": qualifiers.get("gene", ""),
+                "product": qualifiers.get("product", ""),
+                "location": feature["location"],
+            })
+    return records
 
-cds = parse_genbank_cds("~{reference_genbank}")
-def annotate(pos):
+
+# Phenotype table.
+phenotypes = {}
+with open("~{phenotype_tsv}", errors="replace") as fh:
+    fh.readline()
+    for line in fh:
+        if line.strip():
+            sample, value = line.rstrip("\n").split("\t")[:2]
+            phenotypes[sample] = int(float(value))
+cases = {sample for sample, value in phenotypes.items() if value == 1}
+controls = {sample for sample, value in phenotypes.items() if value == 0}
+
+# Reference features, including multi-contig references.
+reference_cds = parse_genbank_cds("~{reference_genbank}")
+reference_ids = sorted({identifier for feature in reference_cds for identifier in feature["record_ids"]})
+
+
+def annotate(chrom, position):
     try:
-        p = int(pos)
+        coordinate = int(position)
     except Exception:
-        return {"locus_tag":"", "gene":"", "product":"", "location":""}
-    for c in cds:
-        if any(a <= p <= b for a,b in c["ranges"]):
-            return c
-    return {"locus_tag":"", "gene":"", "product":"intergenic_or_unannotated", "location":""}
+        return {"locus_tag": "", "gene": "", "product": "", "location": ""}
+    chrom_base = str(chrom or "").split(".")[0]
+    for feature in reference_cds:
+        ids = feature["record_ids"]
+        id_bases = {identifier.split(".")[0] for identifier in ids}
+        record_matches = not chrom or chrom in ids or chrom_base in id_bases or len(reference_ids) == 1
+        if record_matches and any(start <= coordinate <= end for start, end in feature["ranges"]):
+            return feature
+    return {"locus_tag": "", "gene": "", "product": "intergenic_or_unannotated", "location": ""}
 
+
+# VCF genotypes and coordinates.
 vcf_records = {}
 samples = []
 with open("~{snp_vcf}", errors="replace") as fh:
     for line in fh:
         if line.startswith("#CHROM"):
-            parts = line.rstrip("\n").split("\t")
-            samples = parts[9:]
+            samples = line.rstrip("\n").split("\t")[9:]
             continue
         if line.startswith("#") or not line.strip():
             continue
         parts = line.rstrip("\n").split("\t")
         if len(parts) < 8:
             continue
-        chrom, pos, vid, ref, alt, qual = parts[:6]
-        genos = parts[9:]
+        chrom, pos, variant_id, ref, alt, qual = parts[:6]
         alt_samples = set()
-        for s,g in zip(samples, genos):
-            gt = g.split(":",1)[0]
-            if any(a not in ("0",".","") for a in re.split(r"[|/]", gt)):
-                alt_samples.add(s)
-        vid2 = vid if vid not in ("", ".") else f"{chrom}_{pos}_{ref}_{alt}"
-        rec = {"variant_id": vid2, "chrom": chrom, "pos": pos, "ref": ref, "alt": alt, "qual": qual, "alt_samples": alt_samples}
-        for k in {vid2, f"{chrom}_{pos}", f"{chrom}:{pos}", f"{chrom}_{pos}_{ref}_{alt}", f"{pos}", f"{pos}_{ref}_{alt}"}:
-            vcf_records[k] = rec
+        for sample, genotype_field in zip(samples, parts[9:]):
+            genotype = genotype_field.split(":", 1)[0]
+            alleles = re.split(r"[|/]", genotype)
+            if any(allele not in ("0", ".", "") for allele in alleles):
+                alt_samples.add(sample)
+        canonical = variant_id if variant_id not in ("", ".") else f"{chrom}_{pos}_{ref}_{alt}"
+        record = {
+            "variant_id": canonical,
+            "chrom": chrom,
+            "pos": pos,
+            "ref": ref,
+            "alt": alt,
+            "qual": qual,
+            "alt_samples": alt_samples,
+        }
+        keys = {
+            canonical, f"{chrom}_{pos}", f"{chrom}:{pos}",
+            f"{chrom}_{pos}_{ref}_{alt}", str(pos), f"{pos}_{ref}_{alt}"
+        }
+        for key in keys:
+            vcf_records[key] = record
 
+# Pyseer associations.
 assoc_rows = []
 with open("~{pyseer_snp_assoc}", errors="replace") as fh:
     first = fh.readline().rstrip("\n")
@@ -3406,71 +3853,156 @@ with open("~{pyseer_snp_assoc}", errors="replace") as fh:
             parts += [""] * (len(header) - len(parts))
         assoc_rows.append(dict(zip(header, parts)))
 
-rows = []
-for row in assoc_rows:
-    feature = pick(row, ["variant","feature","name"]) or next(iter(row.values()), "")
-    rec = vcf_records.get(feature)
-    if rec is None:
-        for n in re.findall(r"\d+", feature):
-            if n in vcf_records:
-                rec = vcf_records[n]
+parsed = []
+for assoc_row in assoc_rows:
+    feature = pick(assoc_row, ["variant", "feature", "name"]) or next(iter(assoc_row.values()), "")
+    record = vcf_records.get(feature)
+    if record is None:
+        for number in re.findall(r"\d+", feature):
+            if number in vcf_records:
+                record = vcf_records[number]
                 break
-    if rec is None:
-        rec = {"variant_id": feature, "chrom":"", "pos":"", "ref":"", "alt":"", "qual":"", "alt_samples": set()}
-    pval = parse_float(pick(row, ["lrt-pvalue","lrt_pvalue","pvalue","p-value","filter-pvalue","p"]))
-    qval = parse_float(pick(row, ["q_value","q-value","qvalue","adjusted-pvalue","adjusted_pvalue"]))
-    beta = parse_float(pick(row, ["beta","effect","coef","coefficient"]))
-    alt_samples = rec["alt_samples"]
-    ca, co = len(alt_samples & cases), len(alt_samples & controls)
-    ct, cot = len(cases), len(controls)
-    cf, cof = (ca/ct if ct else 0.0), (co/cot if cot else 0.0)
+    if record is None:
+        record = {
+            "variant_id": feature, "chrom": "", "pos": "", "ref": "", "alt": "",
+            "qual": "", "alt_samples": set()
+        }
+    pvalue = parse_float(pick(assoc_row, ["lrt-pvalue", "lrt_pvalue", "pvalue", "p-value", "filter-pvalue", "p"]))
+    beta = parse_float(pick(assoc_row, ["beta", "effect", "coef", "coefficient"]))
+    if pvalue is None or not (0 < pvalue <= 1):
+        continue
+    parsed.append({"record": record, "pvalue": pvalue, "beta": beta})
+
+pvalues = [row["pvalue"] for row in parsed]
+qvalues = bh_adjust(pvalues)
+number_tests = len(pvalues)
+bonferroni_threshold = alpha / number_tests if number_tests else 0.0
+
+rows = []
+for source, qvalue in zip(parsed, qvalues):
+    record = source["record"]
+    pvalue = source["pvalue"]
+    beta = source["beta"]
+    alt_samples = record["alt_samples"]
+    case_alt = len(alt_samples & cases)
+    control_alt = len(alt_samples & controls)
+    case_total = len(cases)
+    control_total = len(controls)
+    case_frequency = case_alt / case_total if case_total else 0.0
+    control_frequency = control_alt / control_total if control_total else 0.0
     if beta is None:
-        beta = cf - cof
-    enriched = "Cases" if cf > cof and beta >= 0 else "Controls" if cof > cf and beta <= 0 else "Check manually"
-    a,b,c,d = ca+0.5, (ct-ca)+0.5, co+0.5, (cot-co)+0.5
-    orv = (a/b)/(c/d)
-    se = math.sqrt(1/a + 1/b + 1/c + 1/d)
-    lo, hi = math.exp(math.log(orv)-1.96*se), math.exp(math.log(orv)+1.96*se)
-    stat = qval if qval is not None else pval
-    score = -math.log10(stat) if stat and stat > 0 else 0.0
-    ann = annotate(rec.get("pos",""))
+        beta = case_frequency - control_frequency
+    enriched = (
+        "Cases" if case_frequency > control_frequency and beta >= 0 else
+        "Controls" if control_frequency > case_frequency and beta <= 0 else
+        "Check manually"
+    )
+
+    a, b = case_alt + 0.5, (case_total - case_alt) + 0.5
+    c, d = control_alt + 0.5, (control_total - control_alt) + 0.5
+    odds_ratio = (a / b) / (c / d)
+    standard_error = math.sqrt(1 / a + 1 / b + 1 / c + 1 / d)
+    ci_low = math.exp(math.log(odds_ratio) - 1.96 * standard_error)
+    ci_high = math.exp(math.log(odds_ratio) + 1.96 * standard_error)
+
+    nominal = pvalue <= alpha
+    fdr = qvalue <= alpha
+    bonferroni = pvalue <= bonferroni_threshold if number_tests else False
+    significance_class = (
+        "bonferroni" if bonferroni else
+        "fdr" if fdr else
+        "nominal" if nominal else
+        "not_significant"
+    )
+    annotation = annotate(record.get("chrom", ""), record.get("pos", ""))
+    score = -math.log10(max(qvalue, 1e-300)) + abs(math.log2(odds_ratio))
+
     rows.append({
-        "feature_id": rec["variant_id"], "variant_id": rec["variant_id"], "feature_type": "snp",
-        "contig": rec["chrom"], "position": rec["pos"], "ref": rec["ref"], "alt": rec["alt"], "qual": rec["qual"],
-        "gene_name": ann.get("gene") or ann.get("locus_tag") or rec["variant_id"],
-        "product": ann.get("product",""), "reference_locus_tag": ann.get("locus_tag",""), "reference_gene": ann.get("gene",""),
-        "reference_product": ann.get("product",""), "reference_location": ann.get("location",""),
-        "case_alt": ca, "case_total": ct, "case_frequency": f"{cf:.4f}",
-        "control_alt": co, "control_total": cot, "control_frequency": f"{cof:.4f}",
-        "enriched_in": enriched, "beta": f"{beta:.6g}", "odds_ratio": f"{orv:.6g}",
-        "odds_ratio_ci95_lower": f"{lo:.6g}", "odds_ratio_ci95_upper": f"{hi:.6g}", "odds_ratio_ci95": f"{lo:.4g}-{hi:.4g}",
-        "pyseer_pvalue": "" if pval is None else f"{pval:.6g}", "q_value": "" if qval is None else f"{qval:.6g}",
-        "priority_score": f"{score:.4f}", "annotation_source": "reference_GenBank_coordinate_overlap",
-        "notes": "SNP-level association; inspect population structure before causal interpretation."
+        "feature_id": record["variant_id"],
+        "variant_id": record["variant_id"],
+        "feature_type": "snp",
+        "contig": record["chrom"],
+        "position": record["pos"],
+        "ref": record["ref"],
+        "alt": record["alt"],
+        "qual": record["qual"],
+        "gene_name": annotation.get("gene") or annotation.get("locus_tag") or record["variant_id"],
+        "product": annotation.get("product", ""),
+        "reference_locus_tag": annotation.get("locus_tag", ""),
+        "reference_gene": annotation.get("gene", ""),
+        "reference_product": annotation.get("product", ""),
+        "reference_location": annotation.get("location", ""),
+        "case_alt": case_alt,
+        "case_total": case_total,
+        "case_frequency": f"{case_frequency:.4f}",
+        "control_alt": control_alt,
+        "control_total": control_total,
+        "control_frequency": f"{control_frequency:.4f}",
+        "enriched_in": enriched,
+        "beta": f"{beta:.6g}",
+        "odds_ratio": f"{odds_ratio:.6g}",
+        "odds_ratio_ci95_lower": f"{ci_low:.6g}",
+        "odds_ratio_ci95_upper": f"{ci_high:.6g}",
+        "odds_ratio_ci95": f"{ci_low:.4g}-{ci_high:.4g}",
+        "pyseer_pvalue": f"{pvalue:.8g}",
+        "q_value": f"{qvalue:.8g}",
+        "nominal_significant": str(nominal).lower(),
+        "fdr_significant": str(fdr).lower(),
+        "bonferroni_significant": str(bonferroni).lower(),
+        "significance_class": significance_class,
+        "priority_score": f"{score:.4f}",
+        "annotation_source": "reference_GenBank_coordinate_overlap",
+        "notes": "BH q-value calculated within rMAP-GWAS; inspect population structure and recombination before causal interpretation.",
     })
 
-rows.sort(key=lambda x: float(x["priority_score"]), reverse=True)
-sig = [r for r in rows if (parse_float(r["q_value"]) is not None and parse_float(r["q_value"]) <= alpha) or (not r["q_value"] and parse_float(r["pyseer_pvalue"]) is not None and parse_float(r["pyseer_pvalue"]) <= alpha)]
+rows.sort(key=lambda row: (float(row["q_value"]), float(row["pyseer_pvalue"]), -abs(float(row["beta"]))))
+fdr_rows = [row for row in rows if row["fdr_significant"] == "true"]
+nominal_rows = [row for row in rows if row["nominal_significant"] == "true"]
+bonferroni_rows = [row for row in rows if row["bonferroni_significant"] == "true"]
 
-fields = ["rank","feature_id","variant_id","feature_type","contig","position","ref","alt","qual","gene_name","product","reference_locus_tag","reference_gene","reference_product","reference_location","case_alt","case_total","case_frequency","control_alt","control_total","control_frequency","enriched_in","beta","odds_ratio","odds_ratio_ci95_lower","odds_ratio_ci95_upper","odds_ratio_ci95","pyseer_pvalue","q_value","priority_score","annotation_source","notes"]
+fields = [
+    "rank", "feature_id", "variant_id", "feature_type", "contig", "position", "ref", "alt", "qual",
+    "gene_name", "product", "reference_locus_tag", "reference_gene", "reference_product", "reference_location",
+    "case_alt", "case_total", "case_frequency", "control_alt", "control_total", "control_frequency",
+    "enriched_in", "beta", "odds_ratio", "odds_ratio_ci95_lower", "odds_ratio_ci95_upper",
+    "odds_ratio_ci95", "pyseer_pvalue", "q_value", "nominal_significant", "fdr_significant",
+    "bonferroni_significant", "significance_class", "priority_score", "annotation_source", "notes"
+]
+
+
 def write_table(path, data):
     with open(path, "w", newline="") as out:
-        w = csv.DictWriter(out, fieldnames=fields, delimiter="\t")
-        w.writeheader()
-        for i,r in enumerate(data, 1):
-            rr = {"rank": i}
-            rr.update(r)
-            w.writerow(rr)
+        writer = csv.DictWriter(out, fieldnames=fields, delimiter="\t", extrasaction="ignore")
+        writer.writeheader()
+        for rank, row in enumerate(data, start=1):
+            record = {"rank": rank}
+            record.update(row)
+            writer.writerow(record)
+
+
 write_table(prefix + "_all_ranked_snp_hits.tsv", rows)
-write_table(prefix + "_top_snp_hits.tsv", sig[:100])
-write_table(prefix + "_all_significant_snp_hits.tsv", sig)
+write_table(prefix + "_top_snp_hits.tsv", fdr_rows[:100])
+write_table(prefix + "_all_significant_snp_hits.tsv", fdr_rows)
+write_table(prefix + "_all_nominal_snp_hits.tsv", nominal_rows)
+write_table(prefix + "_all_bonferroni_snp_hits.tsv", bonferroni_rows)
+
+fdr_p_cutoff = max((float(row["pyseer_pvalue"]) for row in fdr_rows), default=0.0)
 with open(prefix + "_snp_summary.tsv", "w") as out:
     out.write("metric\tvalue\n")
     out.write("snp_gwas_status\tprioritized\n")
+    out.write("multiple_testing_method\tBenjamini-Hochberg FDR and Bonferroni\n")
     out.write(f"pyseer_snp_rows\t{len(assoc_rows)}\n")
+    out.write(f"valid_pvalues_tested\t{number_tests}\n")
     out.write(f"ranked_snp_features\t{len(rows)}\n")
-    out.write(f"significant_snp_features\t{len(sig)}\n")
-    out.write(f"alpha\t{alpha}\n")
+    out.write(f"family_alpha\t{alpha}\n")
+    out.write(f"nominal_pvalue_threshold\t{alpha}\n")
+    out.write(f"fdr_qvalue_threshold\t{alpha}\n")
+    out.write(f"fdr_equivalent_pvalue_cutoff\t{fdr_p_cutoff if fdr_p_cutoff else 'NA'}\n")
+    out.write(f"bonferroni_pvalue_threshold\t{bonferroni_threshold if number_tests else 'NA'}\n")
+    out.write(f"nominal_significant_snp_features\t{len(nominal_rows)}\n")
+    out.write(f"fdr_significant_snp_features\t{len(fdr_rows)}\n")
+    out.write(f"bonferroni_significant_snp_features\t{len(bonferroni_rows)}\n")
+    out.write("primary_reported_significance\tBH_FDR_q_value\n")
 PY
   >>>
 
@@ -3478,6 +4010,8 @@ PY
     File snp_all_ranked_hits = "~{output_prefix}_all_ranked_snp_hits.tsv"
     File snp_top_hits = "~{output_prefix}_top_snp_hits.tsv"
     File snp_all_significant_hits = "~{output_prefix}_all_significant_snp_hits.tsv"
+    File snp_all_nominal_hits = "~{output_prefix}_all_nominal_snp_hits.tsv"
+    File snp_all_bonferroni_hits = "~{output_prefix}_all_bonferroni_snp_hits.tsv"
     File snp_summary = "~{output_prefix}_snp_summary.tsv"
   }
 
@@ -3706,6 +4240,7 @@ task MERGE_RMAP_GWAS_REPORT {
     File top_priority_hits
     File all_significant_hits
     File reference_annotation_summary
+    File enrichment_summary
     File qq_plot_svg
     File manhattan_plot_svg
     File plot_summary
@@ -3725,6 +4260,8 @@ task MERGE_RMAP_GWAS_REPORT {
     File gubbins_log
     File snp_top_hits
     File snp_all_significant_hits
+    File snp_all_nominal_hits
+    File snp_all_bonferroni_hits
     File snp_summary
     File pyseer_snp_assoc
     File snp_vcf
@@ -3735,6 +4272,7 @@ task MERGE_RMAP_GWAS_REPORT {
     String reference_species
     String reference_name
     String annotation_engine
+    Int inline_download_limit_mb
     String python_docker
   }
 
@@ -3754,20 +4292,21 @@ do_snp_gwas = "~{do_snp_gwas}".strip().lower() == "true"
 do_gubbins = "~{do_gubbins}".strip().lower() == "true"
 gwas_mode = """~{gwas_mode}"""
 container_backend = """~{container_backend}"""
+inline_download_limit_bytes = max(0, int("~{inline_download_limit_mb}")) * 1024 * 1024
 
 
 def safe_text(value):
     return html.escape(str(value if value is not None else ""))
 
 
-def read_text(path, limit=60000):
+def read_text(path, limit=None):
     p = Path(path)
     if not p.exists():
         return ""
     txt = p.read_text(errors="replace")
     platform_word = "T" + "erra"
     txt = txt.replace(platform_word + " sample-set", "sample-set").replace(platform_word + " sample set", "sample set").replace(platform_word, "Cromwell")
-    return txt[:limit]
+    return txt if limit is None else txt[:limit]
 
 
 def read_tsv(path):
@@ -3803,25 +4342,15 @@ def summary_value(path, key, default=""):
 
 
 def read_svg(path):
-    """Read a complete SVG for inline embedding.
-
-    Do not use read_text(..., limit=...) here: large SVG plots such as the
-    100x100 Mash kinship heatmap can exceed 450 KB. If an SVG is truncated,
-    the closing </svg> tag is lost and the browser treats all downstream
-    report sections as part of the broken SVG, making the HTML appear to stop
-    around the population-structure panel.
-    """
+    """Read a complete SVG; never truncate it inside the final HTML."""
     p = Path(path)
-    if not p.exists() or not p.is_file() or p.stat().st_size == 0:
-        return "<p class=\"empty\">Plot not available.</p>"
-    txt = p.read_text(errors="replace")
-    start = txt.find("<svg")
-    end = txt.rfind("</svg>")
-    if start == -1 or end == -1:
-        return f"<p class=\"empty\">Plot SVG was not valid or was incomplete: {safe_text(p.name)}.</p>"
-    txt = txt[start:end + len("</svg>")]
-    txt = re.sub(r"<\?xml[^>]*\?>", "", txt)
-    txt = re.sub(r"<!DOCTYPE[^>]*>", "", txt)
+    if not p.exists() or p.stat().st_size == 0:
+        raise RuntimeError(f"Required SVG is missing or empty: {p}")
+    txt = p.read_text(errors="replace").strip()
+    if not txt.startswith("<svg") or not txt.endswith("</svg>"):
+        raise RuntimeError(f"Malformed or truncated SVG: {p}")
+    if txt.count("<svg") != txt.count("</svg>"):
+        raise RuntimeError(f"Unbalanced SVG tags: {p}")
     return txt
 
 
@@ -3829,18 +4358,25 @@ def data_download_href(path, mime="text/plain;charset=utf-8"):
     p = Path(path)
     filename = p.name if str(path) else "output.txt"
     if not p.exists() or not p.is_file() or p.stat().st_size == 0:
-        return "", filename
+        return "", filename, "missing"
+    size = p.stat().st_size
+    if inline_download_limit_bytes and size > inline_download_limit_bytes:
+        return "", filename, "separate_output"
     encoded = base64.b64encode(p.read_bytes()).decode("ascii")
-    return f"data:{mime};base64,{encoded}", filename
+    return f"data:{mime};base64,{encoded}", filename, "embedded"
 
 
 def output_file_card(path, label, description, mime="text/plain;charset=utf-8"):
-    href, filename = data_download_href(path, mime)
+    href, filename, status = data_download_href(path, mime)
     label = safe_text(label)
     filename_safe = safe_text(filename)
     description_safe = safe_text(description)
     if href:
         return f'<a class="output-card" href="{safe_text(href)}" download="{filename_safe}" aria-label="Download {filename_safe}"><span class="output-kind">{label}</span><span class="output-title">{filename_safe}</span><span class="output-desc">{description_safe}</span><span class="download-badge">Download</span></a>'
+    if status == "separate_output":
+        limit_mb = inline_download_limit_bytes / (1024 * 1024) if inline_download_limit_bytes else 0
+        note = description_safe + f" This file exceeds the {limit_mb:g} MB inline limit and is available as a separate workflow output."
+        return f'<div class="output-card separate" aria-label="Separate workflow output {filename_safe}"><span class="output-kind">{label}</span><span class="output-title">{filename_safe}</span><span class="output-desc">{note}</span><span class="download-badge separate-badge">Separate output</span></div>'
     return f'<div class="output-card disabled" aria-label="Unavailable output {filename_safe}"><span class="output-kind">{label}</span><span class="output-title">{filename_safe}</span><span class="output-desc">{description_safe}</span><span class="download-badge unavailable">Unavailable</span></div>'
 
 
@@ -3929,10 +4465,13 @@ def display_header(col):
 def preferred_order(header):
     preferred = [
         "rank", "feature_id", "variant_id", "feature_type", "display_name", "display_label", "contig", "position", "ref", "alt",
-        "gene_name", "product", "reference_locus_tag", "reference_gene", "reference_product", "annotation_confidence",
+        "gene_name", "product", "annotation_confidence", "native_annotation_confidence", "annotation_basis",
+        "reference_rescue_confidence", "reference_locus_tag", "reference_gene", "reference_product",
         "reference_identity", "reference_coverage", "interpretation_note", "annotation_evidence",
         "case_present", "case_alt", "case_total", "case_frequency", "control_present", "control_alt", "control_total", "control_frequency",
-        "enriched_in", "beta", "odds_ratio", "odds_ratio_ci95", "odds_ratio_ci95_lower", "odds_ratio_ci95_upper", "pyseer_pvalue", "q_value", "priority_score",
+        "enriched_in", "beta", "odds_ratio", "odds_ratio_ci95", "odds_ratio_ci95_lower", "odds_ratio_ci95_upper",
+        "pyseer_pvalue", "q_value", "nominal_significant", "fdr_significant", "bonferroni_significant",
+        "significance_class", "priority_score",
         "annotation_source", "reference_match_type", "reference_location", "annotation_note", "cluster_member_ids"
     ]
     seen, ordered = set(), []
@@ -3970,15 +4509,23 @@ def compute_display_name(row):
 
 
 def display_label(row):
+    if row.get("display_label"):
+        return row.get("display_label")
     feature = row.get("feature_id", "") or row.get("variant_id", "") or row.get("variant", "") or "NA"
-    ref_locus = row.get("reference_locus_tag", "") or "no_reference_locus"
-    conf = row.get("annotation_confidence", "none") or "none"
-    identity = row.get("reference_identity", "")
-    coverage = row.get("reference_coverage", "")
-    bits = [feature, ref_locus, conf + " confidence"]
-    if identity or coverage:
-        bits.append("identity=" + (identity or "NA") + "%")
-        bits.append("coverage=" + (coverage or "NA") + "%")
+    final_confidence = (row.get("annotation_confidence", "none") or "none").lower()
+    reference_confidence = (row.get("reference_rescue_confidence", "none") or "none").lower()
+    reference_accepted = reference_confidence in ("high", "medium", "low")
+    reference_locus = row.get("reference_locus_tag", "") if reference_accepted else ""
+    if reference_accepted:
+        bits = [feature, reference_locus or "GenBank_match", final_confidence + " confidence", "GenBank-supported"]
+        identity = row.get("reference_identity", "")
+        coverage = row.get("reference_coverage", "")
+        if identity or coverage:
+            bits.append("identity=" + (identity or "NA") + "%")
+            bits.append("coverage=" + (coverage or "NA") + "%")
+    else:
+        source = row.get("annotation_source", "native annotation") or "native annotation"
+        bits = [feature, "native " + source, final_confidence + " confidence", "GenBank rescue not matched"]
     return " | ".join(bits)
 
 
@@ -4023,6 +4570,10 @@ def top_cards(rows, n=5, title_prefix="Rank"):
             stats.append("enriched: " + display_cell(row.get("enriched_in"), "enriched_in"))
         if row.get("pyseer_pvalue"):
             stats.append("p=" + row.get("pyseer_pvalue"))
+        if row.get("q_value"):
+            stats.append("q=" + row.get("q_value"))
+        if row.get("significance_class"):
+            stats.append("class=" + row.get("significance_class"))
         if row.get("odds_ratio"):
             stats.append("OR=" + row.get("odds_ratio"))
         cards.append("<div class=\"top-card\">")
@@ -4030,7 +4581,8 @@ def top_cards(rows, n=5, title_prefix="Rank"):
         cards.append(f"<div class=\"top-name\">{safe_text(name)}</div>")
         cards.append(f"<div class=\"top-label\">{safe_text(display_label(row))}</div>")
         cards.append(f"<div><span class=\"conf {klass}\">{safe_text(conf)} confidence</span></div>")
-        product = row.get("reference_product", "") or row.get("product", "") or ""
+        accepted_conf = (conf or "none").lower() in ("high", "medium", "low")
+        product = row.get("display_product", "") or (row.get("reference_product", "") if accepted_conf else "") or row.get("product", "") or ""
         if product:
             cards.append(f"<p>{safe_text(product)}</p>")
         if stats:
@@ -4053,14 +4605,18 @@ def legend_table_html():
 
 def confidence_table_html():
     rows = [
-        ("high", ">=95% identity and >=90% coverage, or exact qualifier-level support", "Strong reference-supported annotation"),
-        ("medium", ">=85% identity and >=70% coverage", "Plausible annotation; inspect manually"),
-        ("low", ">=60% identity and >=50% coverage, or weak/partial support", "Tentative annotation only"),
-        ("none", "No usable GenBank match", "Keep the pangenome/SNP marker identifier")
+        ("final high", "Specific native gene plus informative product, or high-confidence GenBank support", "Strong annotation; report the named gene while retaining the stable marker ID"),
+        ("final medium", "Specific native gene or informative product, or medium-confidence GenBank support", "Plausible annotation; inspect manually"),
+        ("final low", "Partial/weak native support or low-confidence GenBank rescue", "Tentative annotation only"),
+        ("final none", "No informative native annotation and no usable GenBank match", "Keep the pangenome/SNP marker identifier"),
+        ("GenBank high", ">=95% identity and >=90% coverage, or exact qualifier-level support", "Strong sequence/reference rescue"),
+        ("GenBank medium", ">=85% identity and >=70% coverage", "Plausible reference rescue"),
+        ("GenBank low", ">=60% identity and >=50% coverage, or exact product-only support", "Tentative reference rescue"),
     ]
     out = ["<div class=\"table-wrap\"><table><thead><tr><th>Confidence</th><th>Rule</th><th>Interpretation</th></tr></thead><tbody>"]
-    for conf, rule, interp in rows:
-        out.append(f"<tr><td><span class=\"conf {confidence_badge_class(conf)}\">{safe_text(conf)}</span></td><td>{safe_text(rule)}</td><td>{safe_text(interp)}</td></tr>")
+    for label, rule, interpretation in rows:
+        base = label.split()[-1]
+        out.append(f"<tr><td><span class=\"conf {confidence_badge_class(base)}\">{safe_text(label)}</span></td><td>{safe_text(rule)}</td><td>{safe_text(interpretation)}</td></tr>")
     out.append("</tbody></table></div>")
     return "\n".join(out)
 
@@ -4089,121 +4645,82 @@ def is_amr_phenotype(phenotype_name, legend):
 def phenotype_scope_text(phenotype_tested, case_label, control_label, amr_like):
     if amr_like:
         return (
-            f"This run is framed as an AMR GWAS because the configured phenotype or group labels indicate "
-            f"resistance/susceptibility. In the pyseer model, {case_label} is coded as 1 and "
-            f"{control_label} is coded as 0. Confirm that resistant isolates are mapped to the case class "
-            f"and susceptible isolates are mapped to the control class before interpreting candidate markers."
+            f"This run is framed as an AMR GWAS. The primary phenotype is phenotypic resistance versus "
+            f"susceptibility for the configured drug, drug class, or AMR trait. In the pyseer model, "
+            f"{case_label} is coded as 1 and {control_label} is coded as 0. Confirm that resistant isolates "
+            f"are mapped to the case class and susceptible isolates are mapped to the control class before "
+            f"interpreting candidate markers."
         )
     return (
         f"This run tests one explicitly configured binary phenotype only: {phenotype_tested}. "
-        f"The model contrast is {case_label} coded as 1 versus {control_label} coded as 0. "
-        f"This report does not assume the contrast is antimicrobial resistance unless the configured phenotype "
-        f"or group labels indicate resistance/susceptibility. Interpret candidate markers only as associations "
-        f"with this configured phenotype."
+        f"The biological contrast used by the model is {case_label} versus {control_label}. "
+        f"For AMR analyses, configure the input metadata so that phenotypically resistant isolates are "
+        f"case=1 and susceptible isolates are control=0."
     )
 
 
 def amr_guardrail_text(amr_like):
-    if amr_like:
-        return (
-            "AMR-specific guardrail: association results should be interpreted as statistical marker-phenotype "
-            "associations, not as final clinical resistance calls. Gene presence/absence is the primary marker set; "
-            "optional SNP GWAS adds point-mutation markers. Sequencing depth, assembly quality, species background, "
-            "multiple genes in the same antibiotic class, plasmid linkage, and phenotype quality should be reviewed "
-            "during filtering and interpretation."
-        )
-    return (
-        "General association guardrail: this is a marker-phenotype GWAS for the configured binary contrast, not "
-        "automatically an AMR analysis. Gene presence/absence is the primary marker set; optional SNP GWAS adds "
-        "point-mutation markers. Review sequencing depth, assembly quality, population structure, sampling design, "
-        "and phenotype definition before making biological or public-health claims."
+    base = (
+        "Association results should be interpreted as statistical marker-phenotype associations, not as final "
+        "clinical resistance calls. Gene presence/absence is the primary marker set; optional SNP GWAS adds "
+        "point-mutation markers. Sequencing depth, assembly quality, species background, multiple genes in the "
+        "same antibiotic class, plasmid linkage, and phenotype quality should be reviewed during filtering and "
+        "interpretation."
     )
+    if amr_like:
+        return "AMR-specific guardrail: " + base
+    return "General guardrail, especially for AMR use cases: " + base
 
 
 def amr_scope_table_html(amr_like):
     intro = phenotype_scope_text(phenotype_tested, case_label, control_label, amr_like)
-    if amr_like:
-        third_header = "Recommended AMR interpretation"
-        rows = [
-            (
-                "Phenotype clarity",
-                "One binary phenotype is tested per run using the phenotype TSV supplied to pyseer.",
-                "For AMR, label the contrast explicitly as phenotypically resistant versus susceptible and verify case/control coding before launch."
-            ),
-            (
-                "Gene presence/absence",
-                "The primary GWAS branch tests pangenome gene-cluster presence/absence with population-structure correction.",
-                "A resistance gene found in some susceptible isolates may reflect gene inactivity, expression differences, breakpoint issues, linkage, or phenotype error; interpret enrichment rather than presence alone."
-            ),
-            (
-                "Point mutations",
-                "Point mutations are not represented by gene presence/absence; they are assessed only when the optional SNP GWAS branch is enabled.",
-                "Use do_snp_gwas=true for mutation-mediated resistance, such as many MTBC drug-resistance phenotypes, and interpret SNP hits alongside known resistance catalogs where available."
-            ),
-            (
-                "Species background",
-                "Species labels are recorded as run provenance, but species is not automatically included as a regression covariate in the default model.",
-                "Avoid pooling divergent species without review. Prefer species-specific or lineage-aware analyses when associations may differ by species."
-            ),
-            (
-                "Sequencing depth and assembly quality",
-                "The workflow generates FASTQ/assembly QC outputs, but read depth and assembly quality are not automatically modeled as covariates.",
-                "Filter low-depth or poor-quality samples and inspect gene absence in susceptible/resistant groups before making biological claims."
-            ),
-            (
-                "Multiple resistance genes in the same class",
-                "Prioritized hits are marker-level associations and may be correlated through plasmids, mobile elements, clonal background, or co-carriage.",
-                "For antibiotic-class interpretation, inspect gene co-occurrence and consider class-level summaries or follow-up multivariable models outside this summary report."
-            ),
-            (
-                "Population structure and linkage",
-                "Mash distances/MDS and population-structure plots are generated to help assess lineage confounding.",
-                "If resistant and susceptible isolates cluster by lineage or outbreak, treat hits as candidates requiring validation rather than causal resistance determinants."
-            )
-        ]
-    else:
-        third_header = "Recommended interpretation"
-        rows = [
-            (
-                "Phenotype clarity",
-                "One binary phenotype is tested per run using the phenotype TSV supplied to pyseer.",
-                "Use phenotype_name and phenotype_display_values to show the real biological contrast, for example specimen_source, HIV_status, MRSA_vs_MSSA, or rpoB_marker_status."
-            ),
-            (
-                "Gene presence/absence",
-                "The primary GWAS branch tests pangenome gene-cluster presence/absence with population-structure correction.",
-                "Interpret hits as gene-cluster associations with the configured phenotype, not as resistance genes unless the phenotype is explicitly an AMR contrast."
-            ),
-            (
-                "Point mutations",
-                "Point mutations are assessed only when the optional SNP GWAS branch is enabled.",
-                "Use do_snp_gwas=true for marker-defined or mutation-driven contrasts, then interpret SNP hits against the configured case/control labels."
-            ),
-            (
-                "Sample metadata and sampling design",
-                "The report displays the metadata-derived case/control labels, but metadata columns are not automatically modeled as covariates.",
-                "For phenotypes such as specimen source, HIV status, geography, host category, or marker carriage, check whether lineage, site, or sampling design explains the association."
-            ),
-            (
-                "Sequencing depth and assembly quality",
-                "The workflow generates FASTQ/assembly QC outputs, but read depth and assembly quality are not automatically modeled as covariates.",
-                "Filter low-depth or poor-quality samples and confirm that apparent gene absence is not caused by technical dropout."
-            ),
-            (
-                "Population structure and linkage",
-                "Mash distances/MDS and population-structure plots are generated to help assess lineage confounding.",
-                "If the configured phenotype clusters by lineage or outbreak, treat hits as candidate associations requiring validation rather than causal determinants."
-            )
-        ]
+    rows = [
+        (
+            "Phenotype clarity",
+            "One binary phenotype is tested per run using the phenotype TSV supplied to pyseer.",
+            "For AMR, label the contrast explicitly as phenotypically resistant versus susceptible and verify case/control coding before launch."
+        ),
+        (
+            "Gene presence/absence",
+            "The primary GWAS branch tests pangenome gene-cluster presence/absence with population-structure correction.",
+            "A resistance gene found in some susceptible isolates may reflect gene inactivity, expression differences, breakpoint issues, linkage, or phenotype error; interpret enrichment rather than presence alone."
+        ),
+        (
+            "Point mutations",
+            "Point mutations are not represented by gene presence/absence; they are assessed only when the optional SNP GWAS branch is enabled.",
+            "Use do_snp_gwas=true for mutation-mediated resistance, such as many MTBC drug-resistance phenotypes, and interpret SNP hits alongside known resistance catalogs where available."
+        ),
+        (
+            "Species background",
+            "Species labels are recorded as run provenance, but species is not automatically included as a regression covariate in the default model.",
+            "Avoid pooling divergent species without review. Prefer species-specific or lineage-aware analyses when associations may differ by species."
+        ),
+        (
+            "Sequencing depth and assembly quality",
+            "The workflow generates FASTQ/assembly QC outputs, but read depth and assembly quality are not automatically modeled as covariates.",
+            "Filter low-depth or poor-quality samples and inspect gene absence in susceptible/resistant groups before making biological claims."
+        ),
+        (
+            "Multiple resistance genes in the same class",
+            "Prioritized hits are marker-level associations and may be correlated through plasmids, mobile elements, clonal background, or co-carriage.",
+            "For antibiotic-class interpretation, inspect gene co-occurrence and consider class-level summaries or follow-up multivariable models outside this summary report."
+        ),
+        (
+            "Population structure and linkage",
+            "Mash distances/MDS and population-structure plots are generated to help assess lineage confounding.",
+            "If resistant and susceptible isolates cluster by lineage or outbreak, treat hits as candidates requiring validation rather than causal resistance determinants."
+        )
+    ]
     out = [
-        f'<div class="callout"><strong>Configured phenotype:</strong> {safe_text(intro)}</div>',
-        '<div class="table-wrap"><table>',
-        f"<thead><tr><th>Interpretation issue</th><th>Current workflow/report behavior</th><th>{safe_text(third_header)}</th></tr></thead><tbody>"
+        f"<div class=\"callout\"><strong>Configured phenotype:</strong> {safe_text(intro)}</div>",
+        "<div class=\"table-wrap\"><table>",
+        "<thead><tr><th>Interpretation issue</th><th>Current workflow/report behavior</th><th>Recommended AMR interpretation</th></tr></thead><tbody>"
     ]
     for concern, behavior, recommendation in rows:
         out.append(f"<tr><td>{safe_text(concern)}</td><td>{safe_text(behavior)}</td><td>{safe_text(recommendation)}</td></tr>")
     out.append("</tbody></table></div>")
     return "\n".join(out)
+
 
 
 def section_tools():
@@ -4214,95 +4731,21 @@ def brief_summary(text):
     return '<div class="summary"><strong>Brief interpretation:</strong> ' + safe_text(text) + '</div>'
 
 
-def card_start_pattern(section_id):
-    return re.compile(
-        r'<div\b(?=[^>]*\bid="' + re.escape(section_id) + r'")(?=[^>]*\bclass="[^"]*\bcard\b[^"]*")[^>]*>',
-        flags=re.I | re.S
-    )
-
-
-def find_matching_card_close(segment):
-    """Return the start offset of the closing </div> for one complete top-level card segment."""
-    token_re = re.compile(r'<(/?)div\b[^>]*>', flags=re.I | re.S)
-    depth = 0
-    for m in token_re.finditer(segment):
-        if m.group(1):
-            depth -= 1
-            if depth == 0:
-                return m.start()
-        else:
-            depth += 1
-    return -1
-
-
-def decorate_one_card(doc, section_id, summary):
-    """Decorate exactly one card without using broad cross-card regex replacements.
-
-    The previous merge post-processing inserted tools with a document-wide regex like
-    `</div>(?=<div class="card")`. That can hit the wrong nested div when a section
-    contains tables, output grids, or large inline SVGs. This function instead finds the
-    requested card by id, walks nested <div> depth, and inserts the summary/tools inside
-    that one card only. If a card cannot be found, validation below will fail loudly.
-    """
-    m = card_start_pattern(section_id).search(doc)
-    if not m:
-        return doc
-    tail = doc[m.start():]
-    close_rel = find_matching_card_close(tail)
-    if close_rel < 0:
-        raise RuntimeError(f"Report merge failed: card '{section_id}' was opened but no matching closing </div> was found.")
-    segment = tail[:close_rel] + '</div>'
-    rest_start = m.start() + close_rel + len('</div>')
-
-    if summary and 'class="summary"' not in segment:
-        segment = re.sub(r'(<h2\b[^>]*>.*?</h2>)', lambda h: h.group(1) + brief_summary(summary), segment, count=1, flags=re.S | re.I)
-
-    if 'class="section-tools"' not in segment:
-        close_rel2 = find_matching_card_close(segment)
-        if close_rel2 < 0:
-            raise RuntimeError(f"Report merge failed after decorating card '{section_id}'.")
-        segment = segment[:close_rel2] + section_tools() + segment[close_rel2:]
-
-    return doc[:m.start()] + segment + doc[rest_start:]
-
-
 def add_section_summaries_and_navigation(doc, summaries):
     doc = doc.replace('<body>', '<body id="top">', 1)
     doc = doc.replace('<section class="hero">', '<section class="hero" id="home">', 1)
     doc = doc.replace('<a href="#pipeline">Pipeline</a><a href="#structure">Population structure</a>', '<a href="#pipeline">Pipeline</a><a href="#run-config">Run config</a><a href="#top-hit">Top hit</a><a href="#structure">Population structure</a>', 1)
     doc = doc.replace('<div class="card half"><h2><span>03</span> Run configuration</h2>', '<div class="card half" id="run-config"><h2><span>03</span> Run configuration</h2>', 1)
-    doc = doc.replace('<div class="card half"><h2><span>04</span> Top-hit GenBank annotation rescue</h2>', '<div class="card half" id="top-hit"><h2><span>04</span> Top-hit GenBank annotation rescue</h2>', 1)
+    doc = doc.replace('<div class="card half"><h2><span>04</span> Top-hit GenBank annotation rescue</h2>', '<div class="card half" id="top-hit"><h2><span>04</span> Top-hit annotation assessment</h2>', 1)
     doc = doc.replace('<div class="title">Prokka + Panaroo</div><p>Creates GFF annotations and pangenome gene matrices.</p>', '<div class="title">' + safe_text(annotation_engine) + ' + Panaroo</div><p>Creates GFF annotations and pangenome gene matrices. Prokka remains the default; Bakta can be enabled with <code>use_bakta=true</code>.</p>', 1)
     doc = doc.replace('container backend recorded as ' + safe_text(container_backend) + '.</div>', 'annotation engine: ' + safe_text(annotation_engine) + '; container backend recorded as ' + safe_text(container_backend) + '.</div>', 1)
-    doc = doc.replace('</nav><div class="callout"><strong>GWAS phenotype being tested:', '</nav><div class="callout disclaimer"><strong>Automated interpretation disclaimer:</strong> The brief summaries in this report are rule-based supportive guidance for navigation and structured review only. Final biological, clinical, or public-health interpretation should be validated by a qualified expert.</div><div class="callout"><strong>GWAS phenotype being tested:', 1)
-
+    doc = doc.replace('</nav><div class="callout"><strong>Sample-size interpretation note:', '</nav><div class="callout disclaimer"><strong>Automated interpretation disclaimer:</strong> The brief summaries in this report are rule-based supportive guidance for navigation and structured review only. Final biological, clinical, or public-health interpretation should be validated by a qualified expert.</div><div class="callout"><strong>Sample-size interpretation note:', 1)
     for section_id, summary in summaries.items():
-        doc = decorate_one_card(doc, section_id, summary)
+        pattern = r'(<div class="card(?: [^"]*)?" id="' + re.escape(section_id) + r'"><h2.*?</h2>)'
+        doc = re.sub(pattern, lambda m: m.group(1) + brief_summary(summary), doc, count=1, flags=re.S)
+    doc = re.sub(r'(</div>)(?=\s*<div class="card)', lambda m: section_tools() + m.group(1), doc)
+    doc = re.sub(r'(</div>)(?=\s*</section>)', lambda m: section_tools() + m.group(1), doc, count=1)
     return doc
-
-
-def validate_report_sections(doc, required_sections):
-    missing = []
-    positions = []
-    for section_id in required_sections:
-        m = card_start_pattern(section_id).search(doc)
-        if not m:
-            missing.append(section_id)
-        else:
-            positions.append((section_id, m.start()))
-    if missing:
-        raise RuntimeError("Report merge failed: missing HTML card section(s): " + ", ".join(missing))
-    out_of_order = []
-    for (prev_id, prev_pos), (cur_id, cur_pos) in zip(positions, positions[1:]):
-        if cur_pos <= prev_pos:
-            out_of_order.append(prev_id + " before " + cur_id)
-    if out_of_order:
-        raise RuntimeError("Report merge failed: section order check failed: " + "; ".join(out_of_order))
-    unclosed_svgs = doc.lower().count('<svg') != doc.lower().count('</svg>')
-    if unclosed_svgs:
-        raise RuntimeError("Report merge failed: SVG open/close counts do not match; refusing to emit a truncated report.")
-    return positions
-
 
 phenotype_rows = read_tsv("~{phenotype_tsv}")
 phenotype_tested = phenotype_rows[0][1] if phenotype_rows and len(phenotype_rows[0]) > 1 else "case_control"
@@ -4322,16 +4765,34 @@ display_subtitle = display_label(first) if first else "No significant gene hit a
 feature_id = first.get("feature_id", "NA") if first else "NA"
 reference_locus_tag = first.get("reference_locus_tag", "") if first else ""
 reference_gene = first.get("reference_gene", "") if first else ""
-annotation_confidence = first.get("annotation_confidence", "none") if first else "none"
-reference_identity = first.get("reference_identity", "") if first else ""
-reference_coverage = first.get("reference_coverage", "") if first else ""
-reference_product = first.get("reference_product", "") if first else ""
-product = first.get("product", "") if first else ""
-interpretation_note = first.get("interpretation_note", "") or first.get("annotation_note", "") or "Displayed from available pangenome/reference annotation; inspect manually."
+annotation_confidence = (first.get("annotation_confidence", "none") if first else "none") or "none"
+native_annotation_confidence = (first.get("native_annotation_confidence", "none") if first else "none") or "none"
+reference_rescue_confidence = (first.get("reference_rescue_confidence", "none") if first else "none") or "none"
+accepted_reference = reference_rescue_confidence.lower() in ("high", "medium", "low")
+reference_identity = first.get("reference_identity", "") if first and accepted_reference else ""
+reference_coverage = first.get("reference_coverage", "") if first and accepted_reference else ""
+reference_product = first.get("reference_product", "") if first and accepted_reference else ""
+if not accepted_reference:
+    reference_locus_tag = ""
+    reference_gene = ""
+product = first.get("display_product", "") or first.get("product", "") if first else ""
+interpretation_note = first.get("interpretation_note", "") or first.get("annotation_note", "") or "Displayed from available native/reference annotation; inspect manually."
+top_hit_reference_text = (
+    (reference_locus_tag or "matched locus") + " / " + (reference_gene or "gene not assigned")
+    if accepted_reference else
+    "Not matched in the selected GenBank reference"
+)
+top_hit_evidence_text = (
+    "GenBank rescue confidence: " + reference_rescue_confidence + "; reference identity: "
+    + str(reference_identity or "NA") + "%; reference coverage: " + str(reference_coverage or "NA") + "%. "
+    if accepted_reference else
+    "Final confidence is based on the native " + annotation_engine + "/Panaroo annotation; GenBank rescue was not matched. "
+)
 
 validation_txt = replace_group_terms_text(read_text("~{validation_report}"))
 panaroo_txt = read_text("~{panaroo_summary}")
 annotation_summary_txt = read_text("~{reference_annotation_summary}")
+gene_multiple_testing_txt = read_text("~{enrichment_summary}")
 plot_summary_txt = read_text("~{plot_summary}")
 population_structure_summary_txt = replace_group_terms_text(read_text("~{population_structure_summary}"))
 snp_summary_txt = read_text("~{snp_summary}")
@@ -4366,10 +4827,19 @@ generated = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
 output_cards_html = "\n".join([
     output_file_card("~{phenotype_legend_tsv}", "Phenotype", "Metadata-derived legend used throughout this report.", "text/tab-separated-values;charset=utf-8"),
-    output_file_card("~{pyseer_gene_assoc}", "GWAS", f"Raw pyseer gene association results. Rows detected: {pyseer_n}.", "text/tab-separated-values;charset=utf-8"),
-    output_file_card("~{pyseer_snp_assoc}", "SNP GWAS", f"Raw pyseer SNP marker association results. Rows detected: {snp_pyseer_n}.", "text/tab-separated-values;charset=utf-8"),
-    output_file_card("~{top_priority_hits}", "Priority", "Ranked top gene hits with reference annotation columns.", "text/tab-separated-values;charset=utf-8"),
+    output_file_card("~{pyseer_gene_assoc}", "Gene GWAS", f"Raw pyseer gene association results. Rows detected: {pyseer_n}.", "text/tab-separated-values;charset=utf-8"),
+    output_file_card("~{top_priority_hits}", "Gene priority", "Top BH-FDR-supported gene hits with native and GenBank annotation columns.", "text/tab-separated-values;charset=utf-8"),
+    output_file_card("~{all_significant_hits}", "Gene FDR", "All gene presence/absence hits passing BH FDR.", "text/tab-separated-values;charset=utf-8"),
+    output_file_card("~{enrichment_summary}", "Multiple testing", "Gene nominal, BH-FDR, and Bonferroni thresholds and counts.", "text/tab-separated-values;charset=utf-8"),
     output_file_card("~{mash_distances}", "Structure", "Square Mash distance matrix used for correction and visualization.", "text/tab-separated-values;charset=utf-8"),
+    output_file_card("~{pyseer_snp_assoc}", "SNP GWAS", f"Raw pyseer SNP marker association results. Rows detected: {snp_pyseer_n}.", "text/tab-separated-values;charset=utf-8"),
+    output_file_card("~{snp_top_hits}", "SNP priority", "Top BH-FDR-supported SNP marker hits.", "text/tab-separated-values;charset=utf-8"),
+    output_file_card("~{snp_all_significant_hits}", "SNP FDR", "All SNP markers passing BH FDR.", "text/tab-separated-values;charset=utf-8"),
+    output_file_card("~{snp_all_nominal_hits}", "SNP nominal", "All SNP markers with nominal p≤0.05; not called significant after correction unless they also pass FDR.", "text/tab-separated-values;charset=utf-8"),
+    output_file_card("~{snp_all_bonferroni_hits}", "SNP Bonferroni", "SNP markers passing the Bonferroni family-wise threshold.", "text/tab-separated-values;charset=utf-8"),
+    output_file_card("~{snp_summary}", "SNP summary", "SNP nominal, BH-FDR, and Bonferroni thresholds and counts.", "text/tab-separated-values;charset=utf-8"),
+    output_file_card("~{snp_vcf}", "SNP VCF", "Reference-guided SNP VCF used for the SNP association branch.", "text/plain;charset=utf-8"),
+    output_file_card("~{gubbins_summary}", "Recombination", "Gubbins request, run, and filtering summary.", "text/tab-separated-values;charset=utf-8"),
     report_download_card(prefix + "_report.html"),
 ])
 
@@ -4437,56 +4907,95 @@ css = """
 .plot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; } @media (max-width: 1000px) { .plot-grid { grid-template-columns: 1fr; } } .snp-plot-stack { display: grid; grid-template-columns: 1fr; gap: 18px; width: 100%; } .snp-plot-stack .plot { width: 100%; } .plot svg { width: 100%; height: auto; border-radius: 18px; border: 1px solid rgba(148,163,184,.18); } .empty, .note { color: var(--muted); } .footer { margin-top: 26px; color: var(--muted); text-align: center; font-size: 13px; }
 """
 
-html_doc = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{safe_text(prefix)} | rMAP-GWAS report</title><style>{css}</style></head><body><div class="page"><section class="hero"><div class="hero-grid"><div><div class="kicker">Cromwell workflow report</div><h1><span class="gradient-text">rMAP-GWAS</span></h1><p class="subtitle">Reproducible microbial GWAS from paired-end reads for one explicitly coded binary phenotype per run, including gene presence/absence GWAS, optional SNP marker GWAS, population-structure visualization, post-GWAS reference annotation, and ranked association reporting.</p><div class="badges"><span class="badge">Cromwell</span><span class="badge">Dockerized</span><span class="badge">Distance-corrected pyseer</span><span class="badge">Multi-pathogen ready</span><span class="badge">Explicit phenotype coding</span><span class="badge">Phenotype interpretation guardrails</span><span class="badge">GenBank annotation rescue</span><span class="badge">Optional SNP GWAS</span></div><nav class="nav"><a href="#phenotype">Phenotype legend</a><a href="#amr-scope">Association scope</a><a href="#pipeline">Pipeline</a><a href="#structure">Population structure</a><a href="#plots">Gene plots</a><a href="#snp">SNP GWAS</a><a href="#gubbins">Recombination</a><a href="#hits">Priority hits</a><a href="#annotation">Reference annotation</a><a href="#validation">Validation</a><a href="#outputs">Outputs</a></nav><div class="callout"><strong>GWAS phenotype being tested:</strong> {safe_text(phenotype_scope)}</div><div class="callout"><strong>Association scope:</strong> {safe_text(amr_guardrail)}</div><div class="callout"><strong>Sample-size interpretation note:</strong> This run has {total} samples ({cases} {safe_text(cases_label)} and {controls} {safe_text(controls_label)}). Interpret association strength in relation to cohort size, phenotype balance, population structure, and independent validation before making biological, clinical, or public-health claims.</div></div><div class="metrics"><div class="metric"><div class="label">{safe_text(cases_label)}</div><div class="num">{cases}</div></div><div class="metric"><div class="label">{safe_text(controls_label)}</div><div class="num">{controls}</div></div><div class="metric"><div class="label">Total samples</div><div class="num">{total}</div></div><div class="metric"><div class="label">Top gene hit</div><div class="num smalltop">{safe_text(display_name)}</div><div class="sub">{safe_text(display_subtitle)}</div></div></div></div></section><section class="grid">
+html_doc = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{safe_text(prefix)} | rMAP-GWAS report</title><style>{css}</style></head><body><div class="page"><section class="hero"><div class="hero-grid"><div><div class="kicker">Cromwell workflow report</div><h1><span class="gradient-text">rMAP-GWAS</span></h1><p class="subtitle">Reproducible microbial GWAS from paired-end reads for one explicitly coded binary phenotype per run, including gene presence/absence GWAS, a configurable reference-guided SNP GWAS branch, population-structure visualization, post-GWAS annotation, multiple-testing correction, and ranked association reporting.</p><div class="badges"><span class="badge">Cromwell</span><span class="badge">Dockerized</span><span class="badge">Distance-corrected pyseer</span><span class="badge">Multi-pathogen ready</span><span class="badge">Explicit phenotype coding</span><span class="badge">AMR interpretation guardrails</span><span class="badge">Native + GenBank annotation</span><span class="badge">BH FDR + Bonferroni</span><span class="badge">Configurable SNP GWAS</span></div><nav class="nav"><a href="#phenotype">Phenotype legend</a><a href="#amr-scope">AMR scope</a><a href="#pipeline">Pipeline</a><a href="#structure">Population structure</a><a href="#plots">Gene plots</a><a href="#multiple-testing">Multiple testing</a><a href="#snp">SNP GWAS</a><a href="#gubbins">Recombination</a><a href="#hits">Priority hits</a><a href="#annotation">Reference annotation</a><a href="#validation">Validation</a><a href="#outputs">Outputs</a></nav><div class="callout"><strong>GWAS phenotype being tested:</strong> {safe_text(phenotype_scope)}</div><div class="callout"><strong>Association scope:</strong> {safe_text(amr_guardrail)}</div><div class="callout"><strong>Sample-size interpretation note:</strong> This run has {total} samples ({cases} {safe_text(cases_label)} and {controls} {safe_text(controls_label)}). Interpret association strength in relation to cohort size, phenotype balance, population structure, and independent validation before making biological, clinical, or public-health claims.</div></div><div class="metrics"><div class="metric"><div class="label">{safe_text(cases_label)}</div><div class="num">{cases}</div></div><div class="metric"><div class="label">{safe_text(controls_label)}</div><div class="num">{controls}</div></div><div class="metric"><div class="label">Total samples</div><div class="num">{total}</div></div><div class="metric"><div class="label">Top gene hit</div><div class="num smalltop">{safe_text(display_name)}</div><div class="sub">{safe_text(display_subtitle)}</div></div></div></div></section><section class="grid">
 <div class="card" id="phenotype"><h2><span>01</span> Phenotype legend and coding</h2><div class="callout"><strong>Phenotype tested:</strong> Binary phenotype <code>{safe_text(phenotype_tested)}</code>. <strong>Configured contrast:</strong> {safe_text(phenotype_question)}. The report displays the metadata-derived biological contrast throughout the HTML: <strong>{safe_text(case_label)} = 1</strong> and <strong>{safe_text(control_label)} = 0</strong>.</div>{legend_table_html()}</div>
-<div class="card" id="amr-scope"><h2><span>01b</span> Phenotype association scope</h2>{amr_scope_table_html(amr_like_phenotype)}</div>
+<div class="card" id="amr-scope"><h2><span>01b</span> AMR phenotype and association scope</h2>{amr_scope_table_html(amr_like_phenotype)}</div>
 <div class="card" id="pipeline"><h2><span>02</span> Workflow architecture</h2><div class="pipeline"><div class="step"><div class="icon">01</div><div class="idx">Input</div><div class="title">Sample-set validation</div><p>Checks sample names, paired FASTQs, group labels, and {safe_text(case_label)}/{safe_text(control_label)} balance.</p></div><div class="step"><div class="icon">02</div><div class="idx">QC</div><div class="title">fastp trimming</div><p>Generates cleaned reads plus QC summaries.</p></div><div class="step"><div class="icon">03</div><div class="idx">Assembly</div><div class="title">Shovill</div><p>Builds de novo genome assemblies using safe Cromwell memory handling.</p></div><div class="step"><div class="icon">04</div><div class="idx">Annotation</div><div class="title">Prokka + Panaroo</div><p>Creates GFF annotations and pangenome gene matrices.</p></div><div class="step"><div class="icon">05</div><div class="idx">GWAS</div><div class="title">Mash + pyseer</div><p>Runs population-structure-aware gene and optional SNP association testing.</p></div><div class="step"><div class="icon">06</div><div class="idx">Rescue</div><div class="title">GenBank annotation</div><p>Maps prioritized pangenome/SNP markers to reference GenBank features where possible.</p></div></div></div>
 <div class="card half"><h2><span>03</span> Run configuration</h2><div class="hit-card"><div class="hit-box"><div class="small">Reference name</div><div class="big">{safe_text(reference_name)}</div></div><div class="hit-box"><div class="small">Species</div><div class="big">{safe_text(reference_species)}</div></div><div class="hit-box"><div class="small">Reference Docker</div><div class="big">{safe_text(reference_docker)}</div></div><div class="hit-box"><div class="small">Generated UTC</div><div class="big">{safe_text(generated)}</div></div></div><div class="callout"><strong>Phenotype coding:</strong> {safe_text(case_label)} = 1; {safe_text(control_label)} = 0. GWAS mode: {safe_text(gwas_mode)}; SNP branch: {safe_text(snp_status)}; Gubbins recombination module: {safe_text(gubbins_effective)}; container backend recorded as {safe_text(container_backend)}.</div></div>
-<div class="card half"><h2><span>04</span> Top-hit GenBank annotation rescue</h2><div class="hit-card"><div class="hit-box"><div class="small">Display name</div><div class="big">{safe_text(display_name)}</div></div><div class="hit-box"><div class="small">Pangenome/SNP marker</div><div class="big">{safe_text(feature_id)}</div></div><div class="hit-box"><div class="small">Reference locus / gene</div><div class="big">{safe_text((reference_locus_tag or 'not matched') + ' / ' + (reference_gene or 'not assigned'))}</div></div><div class="hit-box"><div class="small">Confidence</div><div class="big"><span class="conf {confidence_badge_class(annotation_confidence)}">{safe_text(annotation_confidence or 'none')}</span></div></div></div><div class="callout"><strong>Top-hit interpretation:</strong> {safe_text(interpretation_note)} Reference identity: {safe_text(reference_identity or 'NA')}%; reference coverage: {safe_text(reference_coverage or 'NA')}%. Product: {safe_text(reference_product or product or 'not assigned')}.</div></div>
+<div class="card half"><h2><span>04</span> Top-hit GenBank annotation rescue</h2><div class="hit-card"><div class="hit-box"><div class="small">Display name</div><div class="big">{safe_text(display_name)}</div></div><div class="hit-box"><div class="small">Pangenome/SNP marker</div><div class="big">{safe_text(feature_id)}</div></div><div class="hit-box"><div class="small">Reference rescue</div><div class="big">{safe_text(top_hit_reference_text)}</div></div><div class="hit-box"><div class="small">Final annotation confidence</div><div class="big"><span class="conf {confidence_badge_class(annotation_confidence)}">{safe_text(annotation_confidence or 'none')}</span></div></div></div><div class="callout"><strong>Top-hit interpretation:</strong> {safe_text(interpretation_note)} {safe_text(top_hit_evidence_text)}Product: {safe_text(reference_product or product or 'not assigned')}.</div></div>
 <div class="card" id="structure"><h2><span>05</span> Population structure</h2><div class="callout"><strong>Interpretation check:</strong> Review {safe_text(case_label)}/{safe_text(control_label)} clustering before interpreting top hits. Strong phenotype-lineage clustering can indicate lineage-associated markers rather than causal phenotype-associated variation.</div><div class="callout"><strong>Lay interpretation — PCoA:</strong> {safe_text(pcoa_layman)}</div><div class="plot-grid"><div class="plot">{population_pca_svg}</div><div class="plot">{kinship_heatmap_svg}</div></div><pre>{safe_text(population_structure_summary_txt)}</pre></div>
-<div class="card" id="plots"><h2><span>06</span> Gene presence/absence GWAS plots</h2><div class="callout"><strong>Plot note:</strong> The gene association plot is a feature-index GWAS plot, not a full reference-coordinate Manhattan plot. Significant points are interpreted against the {safe_text(case_label)} versus {safe_text(control_label)} phenotype.</div><div class="callout"><strong>Lay interpretation — gene Manhattan:</strong> {safe_text(gene_manhattan_layman)}</div><div class="callout"><strong>Lay interpretation — gene QQ:</strong> {safe_text(gene_qq_layman)}</div><div class="plot-grid"><div class="plot">{manhattan_svg}</div><div class="plot">{qq_svg}</div></div><pre>{safe_text(plot_summary_txt)}</pre></div>
+<div class="card" id="plots"><h2><span>06</span> Gene presence/absence GWAS plots</h2><div class="callout"><strong>Plot note:</strong> The gene association plot is a feature-index GWAS plot, not a full reference-coordinate Manhattan plot. Pink points pass BH FDR, green points pass Bonferroni, amber points are nominal only, and cyan points are not significant after correction.</div><div class="callout"><strong>Lay interpretation — gene Manhattan:</strong> {safe_text(gene_manhattan_layman)}</div><div class="callout"><strong>Lay interpretation — gene QQ:</strong> {safe_text(gene_qq_layman)}</div><div class="plot-grid"><div class="plot">{manhattan_svg}</div><div class="plot">{qq_svg}</div></div><pre>{safe_text(plot_summary_txt)}</pre></div>
+<div class="card" id="multiple-testing"><h2><span>06a</span> Multiple-testing correction</h2><div class="callout"><strong>Primary significance rule:</strong> Gene and SNP hit tables are filtered by Benjamini-Hochberg FDR q≤0.05. Nominal p≤0.05 results are reported separately and are not called statistically significant. Bonferroni counts provide a stricter family-wise reference.</div><pre>{safe_text(gene_multiple_testing_txt)}</pre></div>
 {snp_section}
 {gubbins_section}
 <div class="card" id="hits"><h2><span>07</span> Top priority gene presence/absence GWAS hits</h2>{top_cards(top_rows, 5)}<h3>Prioritized hit table</h3>{table_from_tsv('~{top_priority_hits}', max_rows=100, reorder=True)}</div>
-<div class="card" id="allhits"><h2><span>08</span> All significant gene presence/absence hits</h2>{table_from_tsv('~{all_significant_hits}', max_rows=100, reorder=True)}</div>
-<div class="card" id="annotation"><h2><span>09</span> Reference annotation confidence guide</h2><div class="callout"><strong>Annotation caveat:</strong> Reference annotation rescue is intended to improve interpretability of pangenome/SNP markers. Low-confidence matches should not be treated as definitive gene calls. Candidate hits should be validated in independent datasets and interpreted in the context of {safe_text(case_label)} versus {safe_text(control_label)}.</div>{confidence_table_html()}<h3>Reference annotation summary</h3><pre>{safe_text(annotation_summary_txt)}</pre></div>
+<div class="card" id="allhits"><h2><span>08</span> All BH-FDR-significant gene presence/absence hits</h2>{table_from_tsv('~{all_significant_hits}', max_rows=100, reorder=True)}</div>
+<div class="card" id="annotation"><h2><span>09</span> Annotation confidence and GenBank rescue guide</h2><div class="callout"><strong>Annotation caveat:</strong> Final annotation confidence combines native Panaroo/Bakta or Panaroo/Prokka evidence with independent GenBank rescue. A specific high-confidence native call can remain high confidence even when the selected reference does not contain that acquired gene. Low-confidence matches should not be treated as definitive gene calls. Candidate hits should be validated in independent datasets and interpreted in the context of {safe_text(case_label)} versus {safe_text(control_label)}.</div>{confidence_table_html()}<h3>Reference annotation summary</h3><pre>{safe_text(annotation_summary_txt)}</pre></div>
 <div class="card half" id="validation"><h2><span>10</span> Input validation</h2><pre>{safe_text(validation_txt)}</pre></div><div class="card half" id="panaroo"><h2><span>11</span> Panaroo summary</h2><pre>{safe_text(panaroo_txt)}</pre></div><div class="card half" id="interpretation"><h2><span>12</span> Interpretation guidance</h2><div class="callout">Microbial GWAS can be confounded by lineage structure, outbreak clustering, recombination, phenotype misclassification, small sample size, species background, variable sequencing depth/assembly quality, point mutations outside gene presence/absence, and co-carriage of multiple resistance genes in the same antibiotic class. Use the population-structure plots, QC outputs, optional SNP GWAS, and, for recombining species, consider enabling Gubbins to reduce recombinant-block-driven SNP associations. Interpret candidate markers as associations with {safe_text(case_label)} versus {safe_text(control_label)}, not as proven causal determinants or standalone clinical resistance calls.</div></div>
 <div class="card" id="outputs"><h2><span>13</span> Key output files</h2><div class="outputs-frame"><p class="note"><strong>Click any output card to download the file.</strong> The cards are kept inside one responsive frame, so this section should not require horizontal scrolling.</p><div class="outputs-grid">{output_cards_html}</div></div></div>
-</section>{download_script}<div class="footer">rMAP-GWAS report generated from successful Cromwell workflow outputs.</div></div></body></html>'''
+</section>{download_script}<div class="footer">rMAP-GWAS report generated from successful Cromwell workflow outputs.</div></div><!-- RMAP_GWAS_REPORT_COMPLETE --></body></html>'''
 
 section_summaries = {
     "phenotype": f"This section confirms the exact binary contrast used by pyseer: {case_label} is coded as 1 and {control_label} is coded as 0. Confirm that these labels match the study metadata before interpreting associations.",
-    "amr-scope": (f"This section addresses AMR-specific interpretation concerns for resistance/susceptibility contrasts." if amr_like_phenotype else f"This section explains how to interpret marker associations for the configured phenotype contrast: {case_label} versus {control_label}."),
+    "amr-scope": f"This section addresses AMR-specific interpretation concerns: resistance versus susceptibility coding, species background, depth and assembly quality, SNP/point mutations, and co-occurring resistance genes for the {case_label} versus {control_label} contrast.",
     "pipeline": f"Reads are quality-trimmed, assembled, annotated with {annotation_engine}, summarized as a Panaroo pangenome, tested with pyseer, and then annotated against the selected reference package.",
     "run-config": f"The report records the reference package, species label, annotation engine, GWAS mode, SNP branch, Gubbins status, and container backend so that the run can be audited and repeated.",
     "top-hit": f"The top gene hit is a candidate association for the {case_label} versus {control_label} contrast. Treat it as a hypothesis until supported by sample size, population-structure checks, annotation confidence, and independent validation.",
     "structure": pcoa_layman,
     "plots": f"Gene Manhattan: {gene_manhattan_layman} Gene QQ: {gene_qq_layman}",
+    "multiple-testing": "The primary hit tables use Benjamini-Hochberg FDR q-values; nominal and Bonferroni counts are displayed separately.",
     "snp": f"SNP Manhattan: {snp_manhattan_layman} SNP QQ: {snp_qq_layman}",
     "gubbins": "The recombination panel documents whether Gubbins was requested, whether filtering succeeded, and whether the SNP GWAS used the filtered or original VCF.",
     "hits": "The prioritized table ranks candidate gene presence/absence associations by statistical evidence, enrichment direction, effect size, and annotation support.",
-    "allhits": "This section lists all significant gene presence/absence hits at the selected threshold; use it for broader review beyond the top candidates.",
-    "annotation": "The confidence guide explains how reference annotation rescue should be interpreted. Low-confidence or unmatched markers should retain their stable Panaroo/SNP identifiers.",
+    "allhits": "This section lists all gene presence/absence hits passing Benjamini-Hochberg FDR at the configured family alpha.",
+    "annotation": "Final confidence combines native Panaroo/Bakta or Panaroo/Prokka annotation with independent GenBank rescue evidence. Unmatched reference rescue does not automatically make a specific native annotation non-confident.",
     "validation": "The validation report checks input consistency, sample counts, paired FASTQ arrays, and phenotype coding before downstream interpretation.",
     "panaroo": f"The Panaroo summary describes the pangenome graph and gene matrix generated from {annotation_engine}-derived GFF files.",
     "interpretation": "These notes summarize major microbial GWAS caveats, including population structure, recombination, small sample size, and phenotype misclassification.",
     "outputs": "This section records the key files needed for review, reruns, sharing, and downstream manuscript or supplementary reporting."
 }
-required_report_sections = [
-    "phenotype", "amr-scope", "pipeline", "run-config", "top-hit", "structure", "plots",
-    "snp", "gubbins", "hits", "allhits", "annotation", "validation", "panaroo", "interpretation", "outputs"
-]
 html_doc = add_section_summaries_and_navigation(html_doc, section_summaries)
-section_positions = validate_report_sections(html_doc, required_report_sections)
-section_manifest_lines = ["section_id\torder\tbyte_offset"]
-for idx, (section_id, byte_offset) in enumerate(section_positions, start=1):
-    section_manifest_lines.append(f"{section_id}\t{idx}\t{byte_offset}")
-Path(prefix + "_report_sections.tsv").write_text("\n".join(section_manifest_lines) + "\n")
-Path(prefix + "_report.html").write_text(html_doc)
+
+# Fail inside the merge task rather than emitting a partially rendered report.
+required_sections = [
+    "home", "phenotype", "amr-scope", "pipeline", "run-config", "top-hit",
+    "structure", "plots", "multiple-testing", "hits", "allhits", "annotation",
+    "validation", "panaroo", "interpretation", "outputs"
+]
+if do_snp_gwas:
+    required_sections.append("snp")
+report_errors = []
+if not html_doc.lstrip().lower().startswith("<!doctype html>"):
+    report_errors.append("missing HTML doctype")
+if not html_doc.rstrip().lower().endswith("</html>"):
+    report_errors.append("missing closing </html>")
+if "<!-- RMAP_GWAS_REPORT_COMPLETE -->" not in html_doc:
+    report_errors.append("missing completion sentinel")
+for section_id in required_sections:
+    if f'id="{section_id}"' not in html_doc:
+        report_errors.append("missing required section: " + section_id)
+if html_doc.count("<svg") != html_doc.count("</svg>"):
+    report_errors.append(
+        f"unbalanced SVG tags: opens={html_doc.count('<svg')} closes={html_doc.count('</svg>')}"
+    )
+if html_doc.count("<table") != html_doc.count("</table>"):
+    report_errors.append(
+        f"unbalanced table tags: opens={html_doc.count('<table')} closes={html_doc.count('</table>')}"
+    )
+if report_errors:
+    raise RuntimeError("Incomplete HTML report: " + "; ".join(report_errors))
+
+report_path = Path(prefix + "_report.html")
+temporary_report_path = Path(prefix + "_report.html.tmp")
+temporary_report_path.write_text(html_doc)
+temporary_report_path.replace(report_path)
+
+with open(prefix + "_report_build_summary.tsv", "w") as out:
+    out.write("metric\tvalue\n")
+    out.write("report_status\tcomplete\n")
+    out.write(f"report_bytes\t{report_path.stat().st_size}\n")
+    out.write(f"svg_open_tags\t{html_doc.count('<svg')}\n")
+    out.write(f"svg_close_tags\t{html_doc.count('</svg>')}\n")
+    out.write(f"table_open_tags\t{html_doc.count('<table')}\n")
+    out.write(f"table_close_tags\t{html_doc.count('</table>')}\n")
+    out.write(f"required_sections\t{len(required_sections)}\n")
+    out.write(f"inline_download_limit_bytes\t{inline_download_limit_bytes}\n")
+    out.write("completion_sentinel\tpresent\n")
+
 provenance = {
     "workflow": "rMAP-GWAS",
-    "workflow_version": "0.4.3-section-merge-guard",
-    "description": "Modular microbial GWAS with metadata-derived phenotype display labels, optional Bakta annotation, section navigation, and rule-based phenotype-specific interpretation summaries in HTML reports.",
+    "workflow_version": "0.5.0-confidence-html-fdr-patch",
+    "description": "Binary-phenotype microbial GWAS with native plus GenBank annotation confidence, BH-FDR and Bonferroni correction, configurable reference-guided SNP GWAS, and integrity-validated self-contained HTML reporting.",
     "gwas_mode": gwas_mode,
     "annotation_engine": annotation_engine,
     "automated_interpretation_disclaimer": "Rule-based report summaries are supportive guidance only and require qualified expert validation.",
@@ -4499,7 +5008,7 @@ provenance = {
     "phenotype_coding": {"case": 1, "control": 0, "case_display_label": case_label, "control_display_label": control_label, "phenotype": phenotype_tested, "phenotype_question": phenotype_question, "metadata_display_column": legend["metadata_column"], "amr_like_phenotype": amr_like_phenotype},
     "association_scope": {
         "primary_gene_presence_absence": True,
-        "optional_snp_gwas": do_snp_gwas,
+        "configurable_reference_guided_snp_gwas": do_snp_gwas,
         "population_structure_correction": "Mash distances/MDS in pyseer gene GWAS; SNP branch uses available distance correction or fallback as configured.",
         "not_automatically_modelled_as_covariates": ["sequencing_depth", "assembly_quality", "species", "multiple_resistance_genes_same_antibiotic_class", "plasmid_or_mobile_element_linkage"],
         "amr_recommendation": "For resistance versus susceptibility analyses, use resistant=case and susceptible=control, filter low-quality samples, stratify or review by species, enable SNP GWAS for mutation-mediated resistance, and inspect gene co-occurrence by antibiotic class."
@@ -4519,7 +5028,7 @@ PY
 
   output {
     File html_report = "~{output_prefix}_report.html"
-    File report_sections_tsv = "~{output_prefix}_report_sections.tsv"
+    File report_build_summary = "~{output_prefix}_report_build_summary.tsv"
     File run_provenance_json = "~{output_prefix}_run_provenance.json"
   }
 
@@ -4528,5 +5037,135 @@ PY
     cpu: 1
     memory: "4 GB"
     disks: "local-disk 50 HDD"
+  }
+}
+
+task VALIDATE_HTML_REPORT {
+  input {
+    File html_report
+    String output_prefix
+    Boolean do_snp_gwas
+    String python_docker
+  }
+
+  command <<<
+set -euo pipefail
+export PATH=/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
+python <<'PY'
+from pathlib import Path
+from html.parser import HTMLParser
+import shutil
+
+source = Path("~{html_report}")
+prefix = "~{output_prefix}"
+do_snp_gwas = "~{do_snp_gwas}".strip().lower() == "true"
+text = source.read_text(errors="replace") if source.exists() else ""
+
+
+class ReportParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.ids = set()
+        self.start_counts = {}
+        self.end_counts = {}
+
+    def handle_starttag(self, tag, attrs):
+        self.start_counts[tag] = self.start_counts.get(tag, 0) + 1
+        for key, value in attrs:
+            if key == "id" and value:
+                self.ids.add(value)
+
+    def handle_startendtag(self, tag, attrs):
+        self.start_counts[tag] = self.start_counts.get(tag, 0) + 1
+        self.end_counts[tag] = self.end_counts.get(tag, 0) + 1
+        for key, value in attrs:
+            if key == "id" and value:
+                self.ids.add(value)
+
+    def handle_endtag(self, tag):
+        self.end_counts[tag] = self.end_counts.get(tag, 0) + 1
+
+
+parser = ReportParser()
+errors = []
+try:
+    parser.feed(text)
+    parser.close()
+except Exception as exc:
+    errors.append(f"HTML parser error: {type(exc).__name__}: {exc}")
+
+required_sections = {
+    "home", "phenotype", "amr-scope", "pipeline", "run-config", "top-hit",
+    "structure", "plots", "multiple-testing", "hits", "allhits", "annotation",
+    "validation", "panaroo", "interpretation", "outputs"
+}
+if do_snp_gwas:
+    required_sections.add("snp")
+
+if not source.exists() or source.stat().st_size == 0:
+    errors.append("HTML report is missing or empty")
+if len(text.encode("utf-8")) < 10000:
+    errors.append("HTML report is unexpectedly small (<10,000 bytes)")
+if not text.lstrip().lower().startswith("<!doctype html>"):
+    errors.append("HTML doctype is missing")
+if not text.rstrip().lower().endswith("</html>"):
+    errors.append("closing </html> is missing")
+if "<!-- RMAP_GWAS_REPORT_COMPLETE -->" not in text:
+    errors.append("completion sentinel is missing")
+missing_sections = sorted(required_sections - parser.ids)
+if missing_sections:
+    errors.append("missing required sections: " + ", ".join(missing_sections))
+
+for tag in ("svg", "table", "section", "script"):
+    starts = parser.start_counts.get(tag, 0)
+    ends = parser.end_counts.get(tag, 0)
+    if starts != ends:
+        errors.append(f"unbalanced <{tag}> tags: starts={starts}, ends={ends}")
+
+# div tags are the main report layout containers; imbalance usually indicates truncation.
+div_starts = parser.start_counts.get("div", 0)
+div_ends = parser.end_counts.get("div", 0)
+if div_starts != div_ends:
+    errors.append(f"unbalanced <div> tags: starts={div_starts}, ends={div_ends}")
+
+if "RMAP_SVG_TRUNCATED" in text or "<!-- TRUNCATED -->" in text:
+    errors.append("truncation marker detected")
+
+summary_path = Path(prefix + "_report_integrity_summary.tsv")
+with summary_path.open("w") as out:
+    out.write("metric\tvalue\n")
+    out.write(f"status\t{'FAIL' if errors else 'PASS'}\n")
+    out.write(f"report_bytes\t{len(text.encode('utf-8'))}\n")
+    out.write(f"required_sections\t{len(required_sections)}\n")
+    out.write(f"required_sections_found\t{len(required_sections & parser.ids)}\n")
+    out.write(f"svg_start_tags\t{parser.start_counts.get('svg', 0)}\n")
+    out.write(f"svg_end_tags\t{parser.end_counts.get('svg', 0)}\n")
+    out.write(f"table_start_tags\t{parser.start_counts.get('table', 0)}\n")
+    out.write(f"table_end_tags\t{parser.end_counts.get('table', 0)}\n")
+    out.write(f"div_start_tags\t{div_starts}\n")
+    out.write(f"div_end_tags\t{div_ends}\n")
+    out.write(f"completion_sentinel\t{'present' if '<!-- RMAP_GWAS_REPORT_COMPLETE -->' in text else 'missing'}\n")
+    out.write(f"errors\t{' | '.join(errors) if errors else 'none'}\n")
+
+if errors:
+    raise SystemExit("HTML report integrity validation failed: " + "; ".join(errors))
+
+validated_dir = Path("validated_report")
+validated_dir.mkdir(exist_ok=True)
+destination = validated_dir / (prefix + "_report.html")
+shutil.copyfile(source, destination)
+PY
+  >>>
+
+  output {
+    File validated_html_report = "validated_report/~{output_prefix}_report.html"
+    File report_integrity_summary = "~{output_prefix}_report_integrity_summary.tsv"
+  }
+
+  runtime {
+    docker: python_docker
+    cpu: 1
+    memory: "2 GB"
+    disks: "local-disk 20 HDD"
   }
 }
